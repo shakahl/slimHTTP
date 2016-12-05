@@ -18,7 +18,7 @@ from collections import OrderedDict as OD
 from random import randint
 
 ## == References:
-def drop_privileges(uid_name='torxed', gid_name='torxed'):
+def drop_privileges(uid_name='alarm', gid_name='alarm'):
 	if getuid() != 0:
 		# We're not root so, like, whatever dude
 		return
@@ -90,9 +90,12 @@ def parse_py(path, content=b'', request=None):
 		imp.reload(handle)
 		ret = handle.main(request=request)
 
-		if bytes('%%'+fname+'.py', 'UTF-8') in content:
-			for key, val in ret.items():
-				content = content.replace(bytes('%%'+fname+'.py::'+key+'%%', 'UTF-8'), bytes(json.dumps(val), 'UTF-8'))
+		if len(content) > 0:
+			if bytes('%%'+fname+'.py', 'UTF-8') in content:
+				for key, val in ret.items():
+					content = content.replace(bytes('%%'+fname+'.py::'+key+'%%', 'UTF-8'), bytes(json.dumps(val), 'UTF-8'))
+		else:
+			content = ret['body']
 
 	return content
 
@@ -104,11 +107,12 @@ def parse_transfered_bytes(data):
 		status = 404
 		status_codes = {200 : 'HTTP/1.0 200 OK',
 				404 : 'HTTP/1.0 404 Not Found'}
-		
+
+		# TODO: Rename GET to Headers or something, for petes sake.		
 		for item in GET.split(b'\r\n'):
 			if len(item) <= 0: continue
 
-			if b'GET /' in item:
+			if item[:5] == b'GET /' or item[:6] == b'POST /':
 				trash, url, trash = item.split(b' ',2)
 				url = url.replace(b'./', b'/').decode('utf-8')
 				print('  Trying to fetch:', url)
@@ -120,8 +124,19 @@ def parse_transfered_bytes(data):
 
 				if isfile(path):
 					if extension == '.py':
+						if item[:6] == b'POST /':
+							if not request:
+								request = {}
+							print(POST)
+							for post_item in POST.split(b'&'):
+								if len(post_item) <= 0: continue
+								print(post_item)
+								key, val = post_item.split(b'=',1)
+								request[key] = val
 						ret_data = parse_py(path, request=request)
 						mime_type = 'text/html'
+						status = 200
+						if type(ret_data) is str: ret_data = bytes(ret_data, 'UTF-8')
 					else:
 						mime_type = guess_type(path)[0]
 						status = 200
