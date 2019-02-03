@@ -1,43 +1,46 @@
 from socket import *
-from ssl import wrap_socket
+#from ssl import wrap_socket
+import ssl
 from select import epoll, EPOLLIN, EPOLLOUT, EPOLLHUP
 from os.path import isfile, abspath
 from mimetypes import guess_type # TODO: security consern, doesn't handle bytes,
 #								   requires us to decode the string before guessing type.
 from json import dumps
 from time import time, sleep
-logs = {}
 
-mute_level = 1
+if not 'log' in __builtins__ or ('__dict__' in __builtins__ and not 'log' in __builtins__.__dict__):
+	LEVEL = 2
+	def _log(*args, **kwargs):
+		if not 'level' in kwargs or kwargs['level'] <= LEVEL:
+			## TODO: Try journald first, print as backup
+			print(args, kwargs)
+	try:
+		__builtins__.__dict__['log'] = _log
+	except:
+		__builtins__['log'] = _log
 
-def log(*args, **kwargs):
-	if not 'level' in kwargs:
-		kwargs['level'] = 0 # info, 1 = warn, 2 = error, 3+ temporary/custom errors.
-
-	if kwargs['level'] < mute_level: return
-
-	source = args[0] if len(args) > 1 else kwargs['application'] if 'application' in kwargs else '?' # argv[0] / kwargs['application'] / ''
-	function = args[1] if len(args) > 2 else kwargs['function'] if 'function' in kwargs else '?'
-	message = ' '.join(args[2:]) if len(args) >= 3 else ' '.join(args[1:]) if len(args) >= 2 else ' '.join(args)
-
-	if 'once' in kwargs:
-		if args[-1] in logs: return True
-
-		logs[message] = time()
-
-	print('[{source}].{function}() [{level}] {msg}'.format(**{'source': source, 'function': function, 'level': kwargs['level'], 'msg' : message}))
+def as_complex(o):
+	if type(o) == bytes:
+		return o.decode('UTF-8')
+	return o
 
 def drop_privileges():
 	return True
 
 class http_cliententity():
 	def __init__(self, parent, sock, addr=None):
-		self.info = {'addr' : addr,
-					'data' : b''}
+		self.info = {'addr' : addr}
 
+		self.data = b''
+
+		self.upgraded = False
+		self.keep_alive = True
 		self.parent = parent
 		self.socket = sock
 		self.id = self.info['addr'][0]
+
+	def __repr__(self):
+		return 'client-ident[{}:{}]'.format(*self.info['addr'])
 
 	def recv(self, buffert=8192):
 		if self.parent.poll(fileno=self.socket.fileno()):
@@ -45,8 +48,8 @@ class http_cliententity():
 			if len(d) == 0:
 				self.close()
 				return None
-			self.info['data'] += d
-			return len(self.info['data'])
+			self.data += d
+			return len(self.data)
 		return None
 
 	#def id(self):
@@ -55,6 +58,9 @@ class http_cliententity():
 	def close(self):
 		self.socket.close()
 		return True
+
+	def send(self, d):
+		self.respond(d)
 
 	def respond(self, d):
 		if d is None: d = b'HTTP/1.1 200 OK\r\n\r\n'
@@ -66,28 +72,33 @@ class http_cliententity():
 		self.socket.send(d)
 		return True
 
+	def parse(self):
+		return http_request(self).parse()
+
 
 class http_serve():
-	def __init__(self):
+	def __init__(self, modules={}, methods={}, upgrades={}, port=80):
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-		self.sock.bind(('', 80))
+		self.sock.bind(('', port))
 
 		self.pollobj = epoll()
 		self.sockets = {}
+		self.modules = modules
+		self.methods = methods
+		self.upgrades = upgrades
 
 		while drop_privileges() is None:
-			log('slimHTTP', 'http_serve', 'Waiting for privileges to drop.', once=True)
+			log('slimHTTP', 'http_serve', 'Waiting for privileges to drop.', once=True, level=1)
 
 		self.sock.listen(10)
 		self.main_so_id = self.sock.fileno()
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
 	def accept(self, client_trap=http_cliententity):
-		events = self.poll(1)
-		if self.main_so_id in events:
+		if self.poll(0.025, fileno=self.main_so_id):
 			ns, na = self.sock.accept()
-			log('slimHTTP', 'http_server', 'Accepting new client: {addr}'.format(**{'addr' : na[0]}))
+			log('slimHTTP', 'http_server', 'Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=3)
 			ns_fileno = ns.fileno()
 			if ns_fileno in self.sockets:
 				self.sockets[ns_fileno].close()
@@ -98,7 +109,7 @@ class http_serve():
 			return self.sockets[ns_fileno]
 		return None
 
-	def poll(self, timeout=10, fileno=None):
+	def poll(self, timeout=0.025, fileno=None):
 		d = dict(self.pollobj.poll(timeout))
 		if fileno: return d[fileno] if fileno in d else None
 		return d
@@ -121,39 +132,58 @@ class http_serve():
 			self.pollobj.unregister(self.main_so_id)
 			self.sock.close()
 
-class https_serve():
-	def __init__(self):
-		pass
+class https_serve(http_serve):
+	def __init__(self, cert, key, *args, **kwargs):
+		super(https_serve, self).__init__(port=443, *args, **kwargs)
+		self.pollobj.unregister(self.sock.fileno())
+
+		context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+		context.load_cert_chain(cert, key)
+		self.sock = context.wrap_socket(self.sock, server_side=True)
+		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
 def get_file(headers, *args, **kwargs):
 	if b'path' in headers:
-		relpath = abspath(b'./' + abspath(headers[b'path']))
-		if isfile( relpath ):
-			with open(relpath, 'rb') as fh:
+		real_path = abspath('./' + headers[b'path'].decode('UTF-8'))
+		log('slimHTTP', 'get_file', 'Trying to fetch "{}"'.format(real_path), level=4)
+		if isfile(real_path):
+			with open(real_path, 'rb') as fh:
 				data = fh.read()
 			
-			return data
+			log('slimHTTP', 'get_file', 'Returning file content:', len(data), level=4)
+			return real_path, data
+
+		log('slimHTTP', 'get_file', '404 - Could\'t locate file', level=4)
 	return None
 
 class http_request():
-	def __init__(self, client_info):
+	def __init__(self, client):
 		""" A dummy parser that will return 200 OK on everything. """
-		self.info = client_info
+		self.client = client
+		self.info = client.info
 		self.headers = {}
 		self.payload = b''
-		self.methods = {b'GET' : self.GET, b'PUT' : self.PUT}
+		self.index_file = b'index.html'
+		self.methods = client.parent.methods
 		self.ret_code = 200
 		self.ret_data = {200 : b'HTTP/1.1 200 OK\r\n',
 						 404 : b'HTTP/1.1 404 Not Found\r\n'}
 		self.ret_headers = {} # b'Content-Type' : 'plain/text' ?
+		log('slimHTTP', 'http_request', 'Setting up a parser for client: {}'.format(client), once=True, level=4)
+
+		if len(self.headers) <= 0:
+			log('slimHTTP', 'http_request', 'No methods registered, using defaults.', once=True, level=5)
+			self.methods[b'GET'] = self.GET
 
 	def local_file(self):
-		path, data = get_file(self.headers)
+		data = get_file(self.headers)
 		if data:
-			mime = guess_type(path.decode('UTF-8'))[0] #TODO: Deviates from bytes pattern. Replace guess_type()
+			path, data = data
+			mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
 			self.ret_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
 		else:
 			self.ret_code = 404
+			data = None
 		return data
 
 	def PUT(self):
@@ -175,11 +205,11 @@ class http_request():
 		return x + b'\r\n'
 
 	def parse(self):
-		# self.info['data'] is the client data.
+		# self.client.data is the client data.
 		# it is inehrited by the client() class and
 		# updated in real time.
-		if 'data' in self.info and b'\r\n\r\n' in self.info['data']:
-			header, self.payload = self.info['data'].split(b'\r\n\r\n') # Copy and split the data so we're not working on live data.
+		if b'\r\n\r\n' in self.client.data:
+			header, self.payload = self.client.data.split(b'\r\n\r\n') # Copy and split the data so we're not working on live data.
 			method, header = header.split(b'\r\n',1)
 			for item in header.split(b'\r\n'):
 				if b':' in item:
@@ -193,16 +223,34 @@ class http_request():
 				for item in payload.split(b'&'):
 					if b'=' in item:
 						k, v = item.split(b'=',1)
-						path_payload[k] = v
+						path_payload[k.lower()] = v
 
 			self.headers[b'path'] = path
 			self.headers[b'method'] = method
 			self.headers[b'path_payload'] = path_payload
 
-			if method in self.methods:
+			if self.headers[b'path'] in (b'/', '/'):
+				self.headers[b'path'] = self.index_file
+
+					#self.headers[b'upgrade'].lower() == b'websocket' and \
+			if b'upgrade' in self.headers and b'connection' in self.headers and \
+					b'upgrade' in self.headers[b'connection'].lower() and \
+					self.headers[b'upgrade'].lower() in self.client.parent.upgrades:
+				log('slimHTTP', 'parse', '{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=1)
+				upgraded = self.client.parent.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload)
+				if upgraded:
+					log('slimHTTP', 'parse', 'Client has been upgraded!', level=5)
+					self.client.parent.sockets[self.client.socket.fileno()] = upgraded
+
+			elif method in self.methods:
+				log('slimHTTP', 'parse', '{} sent a {} request'.format(self.client, method), once=True, level=2)
 				response = self.methods[method]()
 				if type(response) == dict: response = dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
 				return self.build_headers() + response if response else self.build_headers()
+			else:
+				log('slimHTTP', 'parse', 'Can\'t handle {} method.'.format(method), once=True, level=1)
+		else:
+			log('slimHTTP', 'parse', 'Not enough data yet.', once=True, level=5)
 
 		return None
