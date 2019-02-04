@@ -121,8 +121,8 @@ class http_serve():
 				self.sockets[ns_fileno].close()
 				del self.sockets[ns_fileno]
 
-			self.pollobj.register(ns_fileno, EPOLLIN)
 			self.sockets[ns_fileno] = http_cliententity(self, ns, na)
+			self.pollobj.register(ns_fileno, EPOLLIN)
 			return self.sockets[ns_fileno]
 		return None
 
@@ -137,7 +137,8 @@ class http_serve():
 				self.pollobj.unregister(fileno)
 			except FileNotFoundError:
 				pass # Already unregistered most likely.
-			self.sockets[fileno].close()
+			if fileno in self.sockets:
+				self.sockets[fileno].close()
 			return True
 		else:
 			for fileno in self.sockets:
@@ -204,7 +205,7 @@ class http_request():
 		return None
 
 	def GET(self, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=self.headers[b'path'])
+		return self.local_file(root=root, path=headers[b'path'])
 
 	def build_headers(self):
 		x = b''
