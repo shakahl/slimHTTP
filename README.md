@@ -1,5 +1,5 @@
 # slimHTTP
-A minemalistic HTTP server
+A minimalistic HTTP server written in Python.
 
 ## Supports
 
