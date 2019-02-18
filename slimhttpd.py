@@ -9,11 +9,12 @@ from time import time, sleep
 
 #ifdef !log (Yea I know, this should be a 'from main import log' or at least a try/catch)
 if not 'log' in __builtins__ or ('__dict__' in __builtins__ and not 'log' in __builtins__.__dict__):
-	LEVEL = 2
 	def _log(*args, **kwargs):
 		if not 'level' in kwargs or kwargs['level'] <= LEVEL:
 			## TODO: Try journald first, print as backup
 			print(args, kwargs)
+			#with open('debug.log', 'a') as output:
+			#	output.write('{}, {}\n'.format(args, kwargs))
 	try:
 		__builtins__.__dict__['log'] = _log
 	except:
@@ -134,6 +135,7 @@ class http_serve():
 	def close(self, fileno=None):
 		if fileno:
 			try:
+				log('slimhttp', 'close', f'closing fileno: {fileno}', level=5)
 				self.pollobj.unregister(fileno)
 			except FileNotFoundError:
 				pass # Already unregistered most likely.
@@ -143,6 +145,7 @@ class http_serve():
 		else:
 			for fileno in self.sockets:
 				try:
+					log('slimhttp', 'close', f'closing fileno: {fileno}', level=5)
 					self.pollobj.unregister(fileno)
 					self.sockets[fileno].socket.close()
 				except:
