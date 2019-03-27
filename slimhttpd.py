@@ -99,6 +99,7 @@ class http_serve():
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
 		self.sock.bind(('', port))
+		self.ssl = False
 
 		self.pollobj = epoll()
 		self.sockets = {}
@@ -116,6 +117,13 @@ class http_serve():
 	def accept(self, client_trap=http_cliententity):
 		if self.poll(0.025, fileno=self.main_so_id):
 			ns, na = self.sock.accept()
+			if self.ssl:
+				try:
+					ns.do_handshake()
+				except ssl.SSLError as e:
+					## It's a notice, not a error. Started in Python3.7.2 - Not sure why.
+					if e.errno == 1 and 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in e.args[1]:
+						pass
 			log('slimHTTP', 'http_server', 'Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=3)
 			ns_fileno = ns.fileno()
 			if ns_fileno in self.sockets:
@@ -156,11 +164,12 @@ class http_serve():
 class https_serve(http_serve):
 	def __init__(self, cert, key, *args, **kwargs):
 		super(https_serve, self).__init__(port=443, *args, **kwargs)
+		self.ssl = True
 		self.pollobj.unregister(self.sock.fileno())
 
 		context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 		context.load_cert_chain(cert, key)
-		self.sock = context.wrap_socket(self.sock, server_side=True)
+		self.sock = context.wrap_socket(self.sock, server_side=True, do_handshake_on_connect=False)
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
 def get_file(root, path, *args, **kwargs):
