@@ -62,7 +62,10 @@ class http_cliententity():
 
 	def recv(self, buffert=8192):
 		if self.parent.poll(fileno=self.socket.fileno()):
-			d = self.socket.recv(buffert)
+			try:
+				d = self.socket.recv(buffert)
+			except ConnectionResetError:
+				d = ''
 			if len(d) == 0:
 				self.close()
 				return None
