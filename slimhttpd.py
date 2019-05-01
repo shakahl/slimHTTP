@@ -203,6 +203,7 @@ class http_request():
 
 		if len(self.methods) <= 0:
 			log('slimHTTP', 'http_request', 'No methods registered, using defaults.', once=True, level=5)
+			self.methods = {} # Detach from parent map, otherwise we'll reuse old http_request() parsers
 			self.methods[b'GET'] = self.GET
 
 	def local_file(self, root, path):
