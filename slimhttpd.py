@@ -1,4 +1,4 @@
-import ssl
+import ssl, os
 from socket import *
 from select import epoll, EPOLLIN, EPOLLOUT, EPOLLHUP
 from os.path import isfile, abspath
@@ -175,15 +175,30 @@ class https_serve(http_serve):
 		self.sock = context.wrap_socket(self.sock, server_side=True, do_handshake_on_connect=False)
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
-def get_file(root, path, *args, **kwargs):
+def get_file(root, path, headers={}, *args, **kwargs):
 	real_path = abspath('{}/{}'.format(root, path))
 	log('slimHTTP', 'get_file', 'Trying to fetch "{}"'.format(real_path), level=4)
+	if b'range' in headers:
+		_, data_range = headers[b'range'].split(b'=',1)
+		start, stop = [int(x) for x in data_range.split(b'-')]
+		log('slimHTTP', 'get_file', 'Limiting to range: {}-{}'.format(start, stop))
+	else:
+		start, stop = None, None
 	if isfile(real_path):
-		with open(real_path, 'rb') as fh:
-			data = fh.read()
+		if not 'ignore_read' in kwargs or kwargs['ignore_read'] is False:
+			with open(real_path, 'rb') as fh:
+				if start:
+					fh.seek(start)
+				if stop:
+					data = fh.read(stop-start)
+				else:
+					data = fh.read()
+		else:
+			data = b''
 		
-		log('slimHTTP', 'get_file', 'Returning file content:', len(data), level=4)
-		return real_path, data
+		filesize = os.stat(real_path).st_size
+		log('slimHTTP', 'get_file', 'Returning file content: {} (actual size: {})'.format(len(data), filesize), level=4)
+		return real_path, filesize, data
 
 	log('slimHTTP', 'get_file', '404 - Could\'t locate file', level=4)
 
@@ -197,6 +212,7 @@ class http_request():
 		self.methods = client.parent.methods
 		self.ret_code = 200
 		self.ret_data = {200 : b'HTTP/1.1 200 OK\r\n',
+						 206 : b'HTTP/1.1 206 Partial Content\r\n',
 						 404 : b'HTTP/1.1 404 Not Found\r\n'}
 		self.ret_headers = {} # b'Content-Type' : 'plain/text' ?
 		log('slimHTTP', 'http_request', 'Setting up a parser for client: {}'.format(client), once=True, level=4)
@@ -205,13 +221,24 @@ class http_request():
 			log('slimHTTP', 'http_request', 'No methods registered, using defaults.', once=True, level=5)
 			self.methods = {} # Detach from parent map, otherwise we'll reuse old http_request() parsers
 			self.methods[b'GET'] = self.GET
+			self.methods[b'HEAD'] = self.HEAD
 
-	def local_file(self, root, path):
-		data = get_file(root, path)
+	def local_file(self, root, path, headers={}, ignore_read=False):
+		data = get_file(root, path, headers=headers, ignore_read=ignore_read)
 		if data:
-			path, data = data
+			path, length, data = data
 			mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
+			if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
+			if b'range' in headers:
+				_, data_range = headers[b'range'].split(b'=',1)
+				start, stop = [int(x) for x in data_range.split(b'-')]
+				self.ret_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
+				self.ret_code = 206
+			else:
+				if mime == 'application/octet-stream':
+					self.ret_headers[b'Accept-Ranges'] = b'bytes'
 			self.ret_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
+			self.ret_headers[b'Content-Length'] = bytes(str(len(data)), 'UTF-8')
 		else:
 			self.ret_code = 404
 			data = None
@@ -220,8 +247,11 @@ class http_request():
 	def PUT(self):
 		return None
 
+	def HEAD(self, headers={}, payload={}, root='./'):
+		return self.local_file(root=root, path=headers[b'path'], headers=headers, ignore_read=True)
+
 	def GET(self, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=headers[b'path'])
+		return self.local_file(root=root, path=headers[b'path'], headers=headers)
 
 	def build_headers(self):
 		x = b''
