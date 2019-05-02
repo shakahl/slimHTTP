@@ -118,7 +118,7 @@ class http_serve():
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
 	def accept(self, client_trap=http_cliententity):
-		if self.poll(0.025, fileno=self.main_so_id):
+		if self.poll(0.001, fileno=self.main_so_id):
 			ns, na = self.sock.accept()
 			if self.ssl:
 				try:
@@ -138,7 +138,7 @@ class http_serve():
 			return self.sockets[ns_fileno]
 		return None
 
-	def poll(self, timeout=0.025, fileno=None):
+	def poll(self, timeout=0.001, fileno=None):
 		d = dict(self.pollobj.poll(timeout))
 		if fileno: return d[fileno] if fileno in d else None
 		return d
