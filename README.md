@@ -1,5 +1,5 @@
 # slimHTTP
-A minimalistic and flexible HTTP server.
+A minimalistic and flexible HTTP server.<br>
 Manipulate headers, protocol, payloads and session states..
 
 ## Supports
