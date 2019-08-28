@@ -1,4 +1,4 @@
-
+# Using the library: https://github.com/Torxed/spiderWeb
 
 __builtins__.__dict__['LEVEL'] = 5
 __builtins__.__dict__['sockets'] = {
@@ -18,7 +18,7 @@ __builtins__.__dict__['config'] = {
 
 ## Import sub-modules after configuration setup.
 from slimHTTP import slimhttpd
-from spiderWeb import spiderWeb
+from spiderWeb import spiderWeb # https://github.com/Torxed/spiderWeb
 
 class data_parser():
 	def parse(self, client, data, headers, fileno, addr, *args, **kwargs):
