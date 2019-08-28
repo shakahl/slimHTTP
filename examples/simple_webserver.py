@@ -1,6 +1,6 @@
 from json import dumps, loads
-from random import choice
-from string import ascii_uppercase
+# Import slimHTTP after configuration has been set up
+# to avoid default configuration being loaded (TODO to fix this)
 
 __builtins__.__dict__['LEVEL'] = 5   # Logging level
 __builtins__.__dict__['config'] = {  # slimHTTP configuration parameters
@@ -44,11 +44,8 @@ def post(request=None, headers={}, payload={}, root='./', *args, **kwargs):
 		request.ret_headers[b'Server'] = b'slimHTTP/1.0'
 		return b''
 
-responder = http()
 from slimHTTP import slimhttpd
-http = slimhttpd.http_serve(methods={b'POST' : responder.post, b'GET' : responder.get})
-
-sockets = {}
+http = slimhttpd.http_serve(methods={b'POST' : post, b'GET' : get})
 
 while 1:
 	# Accept new clients
@@ -59,7 +56,6 @@ while 1:
 	# Iterate over already accepted clients
 	for fileno, event in http.poll().items():
 		if fileno in http.sockets:
-			sockets[fileno] = http.sockets[fileno]
 			client = http.sockets[fileno]
 			if client.recv():
 				response = client.parse()
