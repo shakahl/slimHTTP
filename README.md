@@ -1,13 +1,15 @@
 # slimHTTP
-A minimalistic HTTP server written in Python.
+A minimalistic and flexible HTTP server.
+Manipulate headers, protocol, payloads and session states..
 
 ## Supports
 
  * vhosts
+ * keep-alive
  * ssl/tls
  * websocket if a upgrade() module is supplied
- * configurable webroot / index files
+ * flexible configuration for webroots etc.
 
 ## Footnote
 
-It's not pretty down here.
+It's not pretty down here. But it'll do in a pinch.
