@@ -314,7 +314,7 @@ class http_request():
 
 			elif method in self.methods:
 				log('slimHTTP', 'parse', '{} sent a "{}" request to path "[{}/]{}"'.format(self.client, method.decode('UTF-8'), web_root,self.headers[b'path']), once=True, level=2)
-				response = self.methods[method](self.headers, self.payload, root=web_root)
+				response = self.methods[method](request=self, headers=self.headers, payload=self.payload, root=web_root)
 				if type(response) == dict: response = dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
 				return self.build_headers() + response if response else self.build_headers()
