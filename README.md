@@ -1,6 +1,7 @@
 # slimHTTP
-A minimalistic and flexible HTTP server.<br>
-Manipulate headers, protocol, payloads and session states..
+A simple, minimal and flexible HTTP server.<br>
+Responds to GET or whatever protocol handlers you define as parameters to `http_serve`.<br>
+Manipulate headers, overall protocol data, payloads and session states.. Sky is the limit.
 
 ## Supports
 
