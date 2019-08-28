@@ -44,9 +44,8 @@ def post(request=None, headers={}, payload={}, root='./', *args, **kwargs):
 		request.ret_headers[b'Server'] = b'slimHTTP/1.0'
 		return b''
 
-responder = http()
 from slimHTTP import slimhttpd
-http = slimhttpd.http_serve(methods={b'POST' : responder.post, b'GET' : responder.get})
+http = slimhttpd.http_serve(methods={b'POST' : post, b'GET' : get})
 
 sockets = {}
 
