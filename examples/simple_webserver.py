@@ -65,7 +65,7 @@ while 1:
 				if response:
 					try:
 						client.send(response)
-						client.data = b''
+						client.data = b'' # Flush client data before next recieve, useful for keep-alive sessions
 					except BrokenPipeError:
 						pass
 					if not client.keep_alive:
