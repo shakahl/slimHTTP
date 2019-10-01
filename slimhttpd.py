@@ -200,7 +200,7 @@ def get_file(root, path, headers={}, *args, **kwargs):
 		log('Returning file content: {} (actual size: {})'.format(len(data), filesize), level=5, origin='slimHTTP', function='get_file')
 		return real_path, filesize, data
 
-	log('404 - Could\'t locate file', level=3, origin='slimHTTP', function='get_file')
+	log(f'404 - Could\'t locate file {real_path}', level=3, origin='slimHTTP', function='get_file')
 
 class http_request():
 	def __init__(self, client):
