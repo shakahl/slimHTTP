@@ -127,7 +127,7 @@ class http_serve():
 					## It's a notice, not a error. Started in Python3.7.2 - Not sure why.
 					if e.errno == 1 and 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in e.args[1]:
 						pass
-			log('Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=3, origin='slimHTTP', function='http_serve')
+			log('Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=2, origin='slimHTTP', function='http_serve')
 			ns_fileno = ns.fileno()
 			if ns_fileno in self.sockets:
 				self.sockets[ns_fileno].close()
@@ -146,7 +146,7 @@ class http_serve():
 	def close(self, fileno=None):
 		if fileno:
 			try:
-				log(f'closing fileno: {fileno}', level=5, origin='slimHTTP', function='http_serve')
+				log(f'closing fileno: {fileno}', level=1, origin='slimHTTP', function='http_serve')
 				self.pollobj.unregister(fileno)
 			except FileNotFoundError:
 				pass # Already unregistered most likely.
@@ -156,7 +156,7 @@ class http_serve():
 		else:
 			for fileno in self.sockets:
 				try:
-					log(f'closing fileno: {fileno}', level=5, origin='slimHTTP', function='http_serve')
+					log(f'closing fileno: {fileno}', level=1, origin='slimHTTP', function='http_serve')
 					self.pollobj.unregister(fileno)
 					self.sockets[fileno].socket.close()
 				except:
@@ -177,11 +177,11 @@ class https_serve(http_serve):
 
 def get_file(root, path, headers={}, *args, **kwargs):
 	real_path = abspath('{}/{}'.format(root, path))
-	log('Trying to fetch "{}"'.format(real_path), level=4, origin='slimHTTP', function='get_file')
+	log('Trying to fetch "{}"'.format(real_path), level=2, origin='slimHTTP', function='get_file')
 	if b'range' in headers:
 		_, data_range = headers[b'range'].split(b'=',1)
 		start, stop = [int(x) for x in data_range.split(b'-')]
-		log('Limiting to range: {}-{}'.format(start, stop), origin='slimHTTP', function='get_file')
+		log('Limiting to range: {}-{}'.format(start, stop), level=1, origin='slimHTTP', function='get_file')
 	else:
 		start, stop = None, None
 	if isfile(real_path):
@@ -197,10 +197,10 @@ def get_file(root, path, headers={}, *args, **kwargs):
 			data = b''
 		
 		filesize = os.stat(real_path).st_size
-		log('Returning file content: {} (actual size: {})'.format(len(data), filesize), level=4, origin='slimHTTP', function='get_file')
+		log('Returning file content: {} (actual size: {})'.format(len(data), filesize), level=1, origin='slimHTTP', function='get_file')
 		return real_path, filesize, data
 
-	log('404 - Could\'t locate file', level=4, origin='slimHTTP', function='get_file')
+	log('404 - Could\'t locate file', level=3, origin='slimHTTP', function='get_file')
 
 class http_request():
 	def __init__(self, client):
@@ -215,10 +215,10 @@ class http_request():
 						 206 : b'HTTP/1.1 206 Partial Content\r\n',
 						 404 : b'HTTP/1.1 404 Not Found\r\n'}
 		self.ret_headers = {} # b'Content-Type' : 'plain/text' ?
-		log('Setting up a parser for client: {}'.format(client), once=True, level=4, origin='slimHTTP', function='http_request')
+		log('Setting up a parser for client: {}'.format(client), once=True, level=1, origin='slimHTTP', function='http_request')
 
 		if len(self.methods) <= 0:
-			log('No methods registered, using defaults.', once=True, level=5, origin='slimHTTP', function='http_request')
+			log('No methods registered, using defaults.', once=True, level=4, origin='slimHTTP', function='http_request')
 			self.methods = {} # Detach from parent map, otherwise we'll reuse old http_request() parsers
 			self.methods[b'GET'] = self.GET
 			self.methods[b'HEAD'] = self.HEAD
@@ -309,7 +309,7 @@ class http_request():
 				log('{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=1, origin='slimHTTP', function='parse')
 				upgraded = self.client.parent.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload)
 				if upgraded:
-					log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
+					log('Client has been upgraded!', level=2, origin='slimHTTP', function='parse')
 					self.client.parent.sockets[self.client.socket.fileno()] = upgraded
 
 			elif method in self.methods:
@@ -319,7 +319,7 @@ class http_request():
 				if type(response) == str: response = bytes(response, 'UTF-8')
 				return self.build_headers() + response if response else self.build_headers()
 			else:
-				log('Can\'t handle {} method.'.format(method), once=True, level=1, origin='slimHTTP', function='parse')
+				log('Can\'t handle {} method.'.format(method), once=True, level=4, origin='slimHTTP', function='parse')
 		else:
 			log('Not enough data yet.', once=True, level=5, origin='slimHTTP', function='parse')
 
