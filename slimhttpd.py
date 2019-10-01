@@ -247,10 +247,10 @@ class http_request():
 	def PUT(self):
 		return None
 
-	def HEAD(self, headers={}, payload={}, root='./'):
+	def HEAD(self, request=None, headers={}, payload={}, root='./'):
 		return self.local_file(root=root, path=headers[b'path'], headers=headers, ignore_read=True)
 
-	def GET(self, headers={}, payload={}, root='./'):
+	def GET(self, request=None, headers={}, payload={}, root='./'):
 		return self.local_file(root=root, path=headers[b'path'], headers=headers)
 
 	def build_headers(self):
