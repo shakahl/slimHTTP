@@ -166,7 +166,8 @@ class http_serve():
 
 class https_serve(http_serve):
 	def __init__(self, cert, key, *args, **kwargs):
-		super(https_serve, self).__init__(port=443, *args, **kwargs)
+		if not 'port' in kwargs: kwargs['port'] = 443
+		super(https_serve, self).__init__(*args, **kwargs)
 		self.ssl = True
 		self.pollobj.unregister(self.sock.fileno())
 
