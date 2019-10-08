@@ -45,7 +45,6 @@ def post(request=None, headers={}, payload={}, root='./', *args, **kwargs):
 		return b''
 
 from slimHTTP import slimhttpd
-from slimHTTP import slimhttpd
 http = slimhttpd.http_serve(upgrades={b'websocket': websocket})
 https = slimhttpd.https_serve(upgrades={b'websocket': websocket}, cert='cert.pem', key='key.pem')
 
