@@ -45,25 +45,31 @@ def post(request=None, headers={}, payload={}, root='./', *args, **kwargs):
 		return b''
 
 from slimHTTP import slimhttpd
-http = slimhttpd.http_serve(methods={b'POST' : post, b'GET' : get})
+from slimHTTP import slimhttpd
+http = slimhttpd.http_serve(upgrades={b'websocket': websocket})
+https = slimhttpd.https_serve(upgrades={b'websocket': websocket}, cert='cert.pem', key='key.pem')
+
+sockets = {}
 
 while 1:
 	# Accept new clients
-	client = http.accept()
-	if client:
-		client.keep_alive = True
+	for handler in [http, https]:
+		client = handler.accept()
+		if client:
+			# If we cant a truly state-less connection:
+			client.keep_alive = True
 
-	# Iterate over already accepted clients
-	for fileno, event in http.poll().items():
-		if fileno in http.sockets:
-			client = http.sockets[fileno]
-			if client.recv():
-				response = client.parse()
-				if response:
-					try:
-						client.send(response)
-						client.data = b'' # Flush client data before next recieve, useful for keep-alive sessions
-					except BrokenPipeError:
-						pass
-					if not client.keep_alive:
-						client.close()
+		# Iterate over already accepted clients
+		for fileno, event in handler.poll().items():
+			if fileno in handler.sockets:
+				client = handler.sockets[fileno]
+				if client.recv():
+					response = client.parse()
+					if response:
+						try:
+							client.send(response)
+							client.data = b'' # Flush client data before next recieve, useful for keep-alive sessions
+						except BrokenPipeError:
+							pass
+						if not client.keep_alive:
+							client.close()
