@@ -219,7 +219,7 @@ class http_request():
 		log('Setting up a parser for client: {}'.format(client), once=True, level=5, origin='slimHTTP', function='http_request')
 
 		if len(self.methods) <= 0:
-			log('No methods registered, using defaults.', once=True, level=2, origin='slimHTTP', function='http_request')
+			log('No methods registered, using defaults.', once=True, level=5, origin='slimHTTP', function='http_request')
 			self.methods = {} # Detach from parent map, otherwise we'll reuse old http_request() parsers
 			self.methods[b'GET'] = self.GET
 			self.methods[b'HEAD'] = self.HEAD
