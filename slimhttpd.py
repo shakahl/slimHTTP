@@ -98,10 +98,10 @@ class http_cliententity():
 
 
 class http_serve():
-	def __init__(self, modules={}, methods={}, upgrades={}, port=80):
+	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80):
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-		self.sock.bind(('', port))
+		self.sock.bind((host, port))
 		self.ssl = False
 
 		self.pollobj = epoll()
@@ -166,6 +166,7 @@ class http_serve():
 
 class https_serve(http_serve):
 	def __init__(self, cert, key, *args, **kwargs):
+		if not 'host' in kwargs: kwargs['host'] = ''
 		if not 'port' in kwargs: kwargs['port'] = 443
 		super(https_serve, self).__init__(*args, **kwargs)
 		self.ssl = True
