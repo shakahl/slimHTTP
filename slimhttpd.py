@@ -356,17 +356,30 @@ class http_request():
 			self.headers[b'method'] = method
 			self.headers[b'path_payload'] = path_payload
 
-			if self.headers[b'path'] == '/':
-				self.headers[b'path'] = config['slimhttp']['index']
-
-				if b'host' in self.headers and 'vhosts' in config['slimhttp'] and self.headers[b'host'].decode('UTF-8') in config['slimhttp']['vhosts']:
-					if 'index' in config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]:
-						self.headers[b'path'] = config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]['index']
-
 			web_root = config['slimhttp']['web_root']
 			if b'host' in self.headers and 'vhosts' in config['slimhttp'] and self.headers[b'host'].decode('UTF-8') in config['slimhttp']['vhosts']:
 				if 'web_root' in config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]:
 					web_root = config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]['web_root']
+
+			if self.headers[b'path'][-1] == '/':
+				vhost_specific_index = False
+				if b'host' in self.headers and 'vhosts' in config['slimhttp'] and self.headers[b'host'].decode('UTF-8') in config['slimhttp']['vhosts']:
+					if 'index' in config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]:
+						index_files = config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]['index']
+						if type(index_files) == str:
+							self.headers[b'path'] += index_files
+							vhost_specific_index = True
+						elif type(index_files) in (list, tuple):
+							for file in index_files:
+								print('Checking:', web_root +'/' + file)
+								if isfile(web_root + '/' + self.headers[b'path'] + file):
+									self.headers[b'path'] += file
+									vhost_specific_index = True
+									break
+
+				if not vhost_specific_index:
+					self.headers[b'path'] += config['slimhttp']['index']
+
 
 					#self.headers[b'upgrade'].lower() == b'websocket' and \
 			if b'upgrade' in self.headers and b'connection' in self.headers and \
