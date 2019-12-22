@@ -312,10 +312,10 @@ class http_request():
 		return None
 
 	def HEAD(self, request=None, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=headers[b'path'], headers=headers, ignore_read=True)
+		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload, ignore_read=True)
 
 	def GET(self, request=None, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=headers[b'path'], headers=headers)
+		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload)
 
 	def build_headers(self):
 		x = b''
