@@ -270,10 +270,12 @@ class http_request():
 							self.ret_headers[header] = respond_headers[header]
 
 						if not b'Content-Type' in respond_headers:
-							self.ret_headers[b'Content-Type'] = b'plain/html'
+							print('Adding response type')
+							self.ret_headers[b'Content-Type'] = b'text/html'
 
 					else:
-						self.ret_headers[b'Content-Type'] = b'plain/html'
+						print('No response headers')
+						self.ret_headers[b'Content-Type'] = b'text/html'
 				else:
 					response = b''
 					self.ret_headers[b'Content-Type'] = b'plain/text'
@@ -371,7 +373,6 @@ class http_request():
 							vhost_specific_index = True
 						elif type(index_files) in (list, tuple):
 							for file in index_files:
-								print('Checking:', web_root +'/' + file)
 								if isfile(web_root + '/' + self.headers[b'path'] + file):
 									self.headers[b'path'] += file
 									vhost_specific_index = True
