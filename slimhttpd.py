@@ -52,7 +52,7 @@ class http_cliententity():
 		self.data = b''
 
 		self.upgraded = False
-		self.keep_alive = True
+		self.keep_alive = False
 		self.parent = parent
 		self.socket = sock
 		self.id = self.info['addr'][0]
