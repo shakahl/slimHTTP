@@ -6,6 +6,7 @@ from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 #								   requires us to decode the string before guessing type.
 from json import dumps
 from time import time, sleep
+import importlib.util
 
 #ifdef !log (Yea I know, this should be a 'from main import log' or at least a try/catch)
 if not 'log' in __builtins__ or ('__dict__' in __builtins__ and not 'log' in __builtins__.__dict__):
