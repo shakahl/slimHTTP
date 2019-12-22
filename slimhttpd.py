@@ -256,7 +256,7 @@ class http_request():
 			self.methods[b'GET'] = self.GET
 			self.methods[b'HEAD'] = self.HEAD
 
-	def local_file(self, root, path, headers={}, ignore_read=False, *args, **kwargs):
+	def local_file(self, root, path, payload={}, headers={}, ignore_read=False, *args, **kwargs):
 		extension = os.path.splitext(path)[1]
 		if extension == '.py':
 			if isfile(f'{root}/{path}'):
@@ -264,7 +264,7 @@ class http_request():
 				if response:
 					old_version, handle = response
 
-					respond_headers, response = handle.response(root, path, headers, *args, **kwargs)
+					respond_headers, response = handle.response(root=root, path=path, payload=payload, headers=headers, *args, **kwargs)
 					if respond_headers:
 						for header in respond_headers:
 							self.ret_headers[header] = respond_headers[header]
