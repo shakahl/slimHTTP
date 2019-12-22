@@ -264,7 +264,7 @@ class http_request():
 				if response:
 					old_version, handle = response
 
-					respond_headers, response = handle.respond(root, path, headers, *args, **kwargs)
+					respond_headers, response = handle.response(root, path, headers, *args, **kwargs)
 					if respond_headers:
 						for header in respond_headers:
 							self.ret_headers[header] = respond_headers[header]
