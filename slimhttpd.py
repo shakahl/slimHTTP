@@ -1,4 +1,4 @@
-import ssl, os
+import ssl, os, sys
 from socket import *
 from select import epoll, EPOLLIN, EPOLLOUT, EPOLLHUP
 from os.path import isfile, abspath
@@ -86,11 +86,14 @@ class http_cliententity():
 	def respond(self, d):
 		if d is None: d = b'HTTP/1.1 200 OK\r\n\r\n'
 
-		if type(d) != bytes:
-			d = bytes(d, 'UTF-8')
+		if type(d) == dict: d = dumps(d)
+		if type(d) != bytes: d = bytes(d, 'UTF-8')
 
 		#print('>', d)
-		self.socket.send(d)
+		try:
+			self.socket.send(d)
+		except OSError: # TODO: close socket and delete from poller
+			return False
 		return True
 
 	def parse(self):
@@ -177,6 +180,30 @@ class https_serve(http_serve):
 		self.sock = context.wrap_socket(self.sock, server_side=True, do_handshake_on_connect=False)
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
+imported_paths = {}
+def handle_py_request(path):
+	old_version = False
+	log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
+	if path not in imported_paths:
+		## https://justus.science/blog/2015/04/19/sys.modules-is-dangerous.html
+		try:
+			log(f'Loading : {path}', level=4, origin='slimHTTP')
+			spec = importlib.util.spec_from_file_location(path, path)
+			imported_paths[path] = importlib.util.module_from_spec(spec)
+			spec.loader.exec_module(imported_paths[path])
+			sys.modules[path] = imported_paths[path]
+		except (SyntaxError, ModuleNotFoundError) as e:
+			log(f'Failed to load file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
+			return None
+	else:
+		log(f'Reloading: {path}', level=4, origin='slimHTTP', function='handle_py_request')
+		try:
+			raise SyntaxError('https://github.com/Torxed/ADderall/issues/11')
+		except SyntaxError as e:
+			old_version = True
+			log(f'Failed to reload requested file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
+	return old_version, imported_paths[f'{path}']
+
 def get_file(root, path, headers={}, *args, **kwargs):
 	real_path = abspath('{}/{}'.format(root, path))
 	log('Trying to fetch "{}"'.format(real_path), level=4, origin='slimHTTP', function='get_file')
@@ -186,7 +213,10 @@ def get_file(root, path, headers={}, *args, **kwargs):
 		log('Limiting to range: {}-{}'.format(start, stop), level=5, origin='slimHTTP', function='get_file')
 	else:
 		start, stop = None, None
-	if isfile(real_path):
+
+	extension = os.path.splitext(real_path)[1]
+
+	if isfile(real_path) and extension != '.py':
 		if not 'ignore_read' in kwargs or kwargs['ignore_read'] is False:
 			with open(real_path, 'rb') as fh:
 				if start:
@@ -225,25 +255,56 @@ class http_request():
 			self.methods[b'GET'] = self.GET
 			self.methods[b'HEAD'] = self.HEAD
 
-	def local_file(self, root, path, headers={}, ignore_read=False):
-		data = get_file(root, path, headers=headers, ignore_read=ignore_read)
-		if data:
-			path, length, data = data
-			mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
-			if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
-			if b'range' in headers:
-				_, data_range = headers[b'range'].split(b'=',1)
-				start, stop = [int(x) for x in data_range.split(b'-')]
-				self.ret_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
-				self.ret_code = 206
+	def local_file(self, root, path, headers={}, ignore_read=False, *args, **kwargs):
+		extension = os.path.splitext(path)[1]
+		if extension == '.py':
+			if isfile(f'{root}/{path}'):
+				response = handle_py_request(f'{root}/{path}')
+				if response:
+					old_version, handle = response
+
+					respond_headers, response = handle.respond(root, path, headers, *args, **kwargs)
+					if respond_headers:
+						for header in respond_headers:
+							self.ret_headers[header] = respond_headers[header]
+
+						if not b'Content-Type' in respond_headers:
+							self.ret_headers[b'Content-Type'] = b'plain/html'
+
+					else:
+						self.ret_headers[b'Content-Type'] = b'plain/html'
+				else:
+					response = b''
+					self.ret_headers[b'Content-Type'] = b'plain/text'
+
+				if not b'Content-Length' in self.ret_headers:
+					self.ret_headers[b'Content-Length'] = bytes(str(len(response)), 'UTF-8')
+				return response
 			else:
-				if mime == 'application/octet-stream':
-					self.ret_headers[b'Accept-Ranges'] = b'bytes'
-			self.ret_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
-			self.ret_headers[b'Content-Length'] = bytes(str(len(data)), 'UTF-8')
+				print(404)
+				self.ret_code = 404
+				data = None
 		else:
-			self.ret_code = 404
-			data = None
+			data = get_file(root, path, headers=headers, ignore_read=ignore_read)
+			if data:
+				path, length, data = data
+				mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
+				if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
+				if b'range' in headers:
+					_, data_range = headers[b'range'].split(b'=',1)
+					start, stop = [int(x) for x in data_range.split(b'-')]
+					self.ret_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
+					self.ret_code = 206
+				else:
+					if mime == 'application/octet-stream':
+						self.ret_headers[b'Accept-Ranges'] = b'bytes'
+
+				self.ret_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
+				self.ret_headers[b'Content-Length'] = bytes(str(len(data)), 'UTF-8')
+			else:
+				self.ret_code = 404
+				data = None
+
 		return data
 
 	def PUT(self):
@@ -263,6 +324,8 @@ class http_request():
 			return b'HTTP/1.1 500 Internal Server Error\r\n\r\n'
 
 		for key, val in self.ret_headers.items():
+			if type(key) != bytes: key = bytes(key, 'UTF-8')
+			if type(val) != bytes: val = bytes(val, 'UTF-8')
 			x += key + b': ' + val + b'\r\n'
 		
 		return x + b'\r\n'
