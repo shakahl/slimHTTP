@@ -254,6 +254,7 @@ class http_request():
 			log('No methods registered, using defaults.', once=True, level=5, origin='slimHTTP', function='http_request')
 			self.methods = {} # Detach from parent map, otherwise we'll reuse old http_request() parsers
 			self.methods[b'GET'] = self.GET
+			self.methods[b'POST'] = self.POST
 			self.methods[b'HEAD'] = self.HEAD
 
 	def local_file(self, root, path, payload={}, headers={}, ignore_read=False, *args, **kwargs):
@@ -270,11 +271,9 @@ class http_request():
 							self.ret_headers[header] = respond_headers[header]
 
 						if not b'Content-Type' in respond_headers:
-							print('Adding response type')
 							self.ret_headers[b'Content-Type'] = b'text/html'
 
 					else:
-						print('No response headers')
 						self.ret_headers[b'Content-Type'] = b'text/html'
 				else:
 					response = b''
@@ -317,6 +316,9 @@ class http_request():
 		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload, ignore_read=True)
 
 	def GET(self, request=None, headers={}, payload={}, root='./'):
+		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload)
+
+	def POST(self, request=None, headers={}, payload={}, root='./'):
 		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload)
 
 	def build_headers(self):
