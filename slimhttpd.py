@@ -256,6 +256,8 @@ class http_request():
 			self.methods[b'GET'] = self.GET
 			self.methods[b'POST'] = self.POST
 			self.methods[b'HEAD'] = self.HEAD
+		else:
+			self.methods = {b'GET' : self.GET, b'POST' : self.POST, b'HEAD' : self.HEAD, **self.methods}
 
 	def local_file(self, root, path, payload={}, headers={}, ignore_read=False, *args, **kwargs):
 		extension = os.path.splitext(path)[1]
