@@ -246,6 +246,7 @@ class http_request():
 		self.ret_code = 200
 		self.ret_data = {200 : b'HTTP/1.1 200 OK\r\n',
 						 206 : b'HTTP/1.1 206 Partial Content\r\n',
+						 302 : b'HTTP/1.1 302 Found\r\n',
 						 404 : b'HTTP/1.1 404 Not Found\r\n'}
 		self.ret_headers = {} # b'Content-Type' : 'plain/text' ?
 		log('Setting up a parser for client: {}'.format(client), once=True, level=5, origin='slimHTTP', function='http_request')
@@ -267,8 +268,11 @@ class http_request():
 				if response:
 					old_version, handle = response
 
-					respond_headers, response = handle.response(root=root, path=path, payload=payload, headers=headers, *args, **kwargs)
+					respond_headers, response = handle.process(root=root, path=path, payload=payload, headers=headers, *args, **kwargs)
 					if respond_headers:
+						if b'_code' in respond_headers:
+							self.ret_code = respond_headers[b'_code']
+							del(respond_headers[b'_code']) # Ugly hack.. Don't like.. TODO! Fix!
 						for header in respond_headers:
 							self.ret_headers[header] = respond_headers[header]
 
@@ -383,8 +387,13 @@ class http_request():
 									break
 
 				if not vhost_specific_index:
-					self.headers[b'path'] += config['slimhttp']['index']
-
+					if type(config['slimhttp']['index']) == str:
+						self.headers[b'path'] += config['slimhttp']['index']
+					elif type(config['slimhttp']['index']) in (list, tuple):
+						for index in config['slimhttp']['index']:
+							if isfile(web_root + '/' + index):
+								self.headers[b'path'] += index
+								break
 
 					#self.headers[b'upgrade'].lower() == b'websocket' and \
 			if b'upgrade' in self.headers and b'connection' in self.headers and \
@@ -397,7 +406,11 @@ class http_request():
 					self.client.parent.sockets[self.client.socket.fileno()] = upgraded
 
 			elif method in self.methods:
-				log('{} sent a "{}" request to path "[{}/]{}"'.format(self.client, method.decode('UTF-8'), web_root,self.headers[b'path']), once=True, level=4, origin='slimHTTP', function='parse')
+				if b'host' in self.headers:
+					host = self.headers[b'host'].decode('UTF-8')
+				else:
+					host = 'default'
+				log('{} sent a "{}" request to path "[{}/]{} @ {}"'.format(self.client, method.decode('UTF-8'), web_root,self.headers[b'path'], host), once=True, level=4, origin='slimHTTP', function='parse')
 				response = self.methods[method](request=self, headers=self.headers, payload=self.payload, root=web_root)
 				if type(response) == dict: response = dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
