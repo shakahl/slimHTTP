@@ -65,7 +65,9 @@ class http_cliententity():
 		if self.parent.poll(fileno=self.socket.fileno()):
 			try:
 				d = self.socket.recv(buffert)
-			except ConnectionResetError:
+			#except ConnectionResetError:
+			#	d = ''
+			except: # There's to many errors that can be thrown here for the same reasons, SSL, OSError, Connection errors etc. They all mean the same thing, things broke and the client couldn't deliver data accordingly.
 				d = ''
 			if len(d) == 0:
 				self.close()
