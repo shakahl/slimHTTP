@@ -49,6 +49,7 @@ def drop_privileges():
 class http_cliententity():
 	def __init__(self, parent, sock, addr=None):
 		self.info = {'addr' : addr}
+		self.addr = addr
 
 		self.data = b''
 
@@ -133,7 +134,7 @@ class http_serve():
 					## It's a notice, not a error. Started in Python3.7.2 - Not sure why.
 					if e.errno == 1 and 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in e.args[1]:
 						pass
-			log('Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=4, origin='slimHTTP', function='http_serve')
+			log('Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=5, origin='slimHTTP', function='http_serve')
 			ns_fileno = ns.fileno()
 			if ns_fileno in self.sockets:
 				self.sockets[ns_fileno].close()
@@ -209,7 +210,7 @@ def handle_py_request(path):
 
 def get_file(root, path, headers={}, *args, **kwargs):
 	real_path = abspath('{}/{}'.format(root, path))
-	log('Trying to fetch "{}"'.format(real_path), level=4, origin='slimHTTP', function='get_file')
+	log('Trying to fetch "{}"'.format(real_path), level=5, origin='slimHTTP', function='get_file')
 	if b'range' in headers:
 		_, data_range = headers[b'range'].split(b'=',1)
 		start, stop = [int(x) for x in data_range.split(b'-')]
@@ -270,19 +271,23 @@ class http_request():
 				if response:
 					old_version, handle = response
 
-					respond_headers, response = handle.process(root=root, path=path, payload=payload, headers=headers, *args, **kwargs)
-					if respond_headers:
-						if b'_code' in respond_headers:
-							self.ret_code = respond_headers[b'_code']
-							del(respond_headers[b'_code']) # Ugly hack.. Don't like.. TODO! Fix!
-						for header in respond_headers:
-							self.ret_headers[header] = respond_headers[header]
+					response_data = handle.process(root=root, path=path, payload=payload, headers=headers, *args, **kwargs)
+					if response_data:
+						if len(response_data) == 1: response_data = {}, response_data # Assume payload, and pad with headers
+						respond_headers, response = response_data
 
-						if not b'Content-Type' in respond_headers:
+						if respond_headers:
+							if b'_code' in respond_headers:
+								self.ret_code = respond_headers[b'_code']
+								del(respond_headers[b'_code']) # Ugly hack.. Don't like.. TODO! Fix!
+							for header in respond_headers:
+								self.ret_headers[header] = respond_headers[header]
+
+							if not b'Content-Type' in respond_headers:
+								self.ret_headers[b'Content-Type'] = b'text/html'
+
+						else:
 							self.ret_headers[b'Content-Type'] = b'text/html'
-
-					else:
-						self.ret_headers[b'Content-Type'] = b'text/html'
 				else:
 					response = b''
 					self.ret_headers[b'Content-Type'] = b'plain/text'
@@ -404,7 +409,7 @@ class http_request():
 				log('{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
 				upgraded = self.client.parent.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload)
 				if upgraded:
-					log('Client has been upgraded!', level=4, origin='slimHTTP', function='parse')
+					log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
 					self.client.parent.sockets[self.client.socket.fileno()] = upgraded
 
 			elif method in self.methods:
@@ -412,7 +417,7 @@ class http_request():
 					host = self.headers[b'host'].decode('UTF-8')
 				else:
 					host = 'default'
-				log('{} sent a "{}" request to path "[{}/]{} @ {}"'.format(self.client, method.decode('UTF-8'), web_root,self.headers[b'path'], host), once=True, level=4, origin='slimHTTP', function='parse')
+				log('{} sent a "{}" request to path "[{}/]{} @ {}"'.format(self.client, method.decode('UTF-8'), web_root,self.headers[b'path'], host), once=True, level=5, origin='slimHTTP', function='parse')
 				response = self.methods[method](request=self, headers=self.headers, payload=self.payload, root=web_root)
 				if type(response) == dict: response = dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
