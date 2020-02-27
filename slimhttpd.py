@@ -1,4 +1,4 @@
-import ssl, os, sys
+import ssl, os, sys, glob
 from socket import *
 from select import epoll, EPOLLIN, EPOLLOUT, EPOLLHUP
 from os.path import isfile, abspath
@@ -6,6 +6,7 @@ from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 #								   requires us to decode the string before guessing type.
 from json import dumps
 from time import time, sleep
+from OpenSSL import SSL, crypto
 import importlib.util
 
 #ifdef !log (Yea I know, this should be a 'from main import log' or at least a try/catch)
@@ -59,22 +60,70 @@ class http_cliententity():
 		self.socket = sock
 		self.id = self.info['addr'][0]
 
+		self.sslified = False
+
 	def __repr__(self):
 		return 'client[{}:{}]'.format(*self.info['addr'])
 
 	def recv(self, buffert=8192):
 		if self.parent.poll(fileno=self.socket.fileno()):
-			try:
-				d = self.socket.recv(buffert)
-			#except ConnectionResetError:
-			#	d = ''
-			except: # There's to many errors that can be thrown here for the same reasons, SSL, OSError, Connection errors etc. They all mean the same thing, things broke and the client couldn't deliver data accordingly.
-				d = ''
-			if len(d) == 0:
-				self.close()
-				return None
-			self.data += d
-			return len(self.data)
+			## https://stackoverflow.com/questions/12478048/no-shared-cipher-error-with-python-and-openssl
+			if not self.sslified and self.parent.ssl:
+				try:
+					self.socket.do_handshake()
+				except SSL.SysCallError as e:
+					code, message = e.args
+					if code == -1 and message == 'Unexpected EOF':
+						print('[W] Client did not supply a certificate.')
+						self.close()
+						return None
+					else:
+						print('[E]', code, message)
+				#except ssl.SSLError as e:
+				#	if e.library == 'SSL':
+				#		if e.reason == 'PEER_DID_NOT_RETURN_A_CERTIFICATE':
+				#			print('[W] Client did not supply a certificate.')
+				#			self.close()
+				#			return None
+				#		elif e.reason == 'CERTIFICATE_VERIFY_FAILED':
+				#			print('[W] Could not verify certificate:', e.verify_message)
+				#			self.close()
+				#			return None
+				#		else:
+				#			print('[E] Unknown SSL error:', e)
+				#			self.close()
+				#			return None
+				#	else:
+				#		print('Unknown error:', e)
+				#except OSError as e:
+				#	print('-!!-')
+				#	if e.errno == 0:
+				#		# TODO: Support Early TLS vhost thingie, causing bad handshakes prior to cert being given.
+				#		self.close()
+				#		return None
+				#	elif e.library == 'SSL':
+				#		if e.errno == 1 and e.reason == 'CERTIFICATE_VERIFY_FAILED':
+				#			print('Could not verify client certificate.')
+				#			return None
+				#
+				#		print('[W]', e.errno, e.library, e.reason, e.verify_message)
+				#	else:
+				#		print(e)
+				#	self.close()
+				#	return None
+				self.sslified = True
+			else:
+				try:
+					d = self.socket.recv(buffert)
+				#except ConnectionResetError:
+				#	d = ''
+				except: # There's to many errors that can be thrown here for the same reasons, SSL, OSError, Connection errors etc. They all mean the same thing, things broke and the client couldn't deliver data accordingly.
+					d = ''
+				if len(d) == 0:
+					self.close()
+					return None
+				self.data += d
+				return len(self.data)
 		return None
 
 	#def id(self):
@@ -105,7 +154,7 @@ class http_cliententity():
 
 
 class http_serve():
-	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80):
+	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80, cert=None, key=None):
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
 		self.sock.bind((host, port))
@@ -116,6 +165,8 @@ class http_serve():
 		self.modules = modules
 		self.methods = methods
 		self.upgrades = upgrades
+		self.cert = cert
+		self.key = key
 
 		while drop_privileges() is None:
 			log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
@@ -124,16 +175,58 @@ class http_serve():
 		self.main_so_id = self.sock.fileno()
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
+	def certificate_verification(self, conn, cert, errnum, depth, ret_code):
+		#print(f'Got cert: {cert}')
+		cert_hash = cert.get_subject().hash()
+		cert_info = dict(cert.get_subject().get_components())
+		cert_serial = cert.get_serial_number()
+		
+		# cert = ['__class__', '__delattr__', '__dict__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__', '__getattribute__', '__gt__', '__hash__', '__init__', '__init_subclass__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', '__weakref__', '_from_raw_x509_ptr', '_get_boundary_time', '_get_name', '_issuer_invalidator', '_set_boundary_time', '_set_name', '_subject_invalidator', '_x509', 'add_extensions', 'digest', 'from_cryptography', 'get_extension', 'get_extension_count', 'get_issuer', 'get_notAfter', 'get_notBefore', 'get_pubkey', 'get_serial_number', 'get_signature_algorithm', 'get_subject', 'get_version', 'gmtime_adj_notAfter', 'gmtime_adj_notBefore', 'has_expired', 'set_issuer', 'set_notAfter', 'set_notBefore', 'set_pubkey', 'set_serial_number', 'set_subject', 'set_version', 'sign', 'subject_name_hash', 'to_cryptography']
+		if cert_info[b'CN'] == b'Some Common Name':
+			return True
+		return False
+
 	def accept(self, client_trap=http_cliententity):
 		if self.poll(0.001, fileno=self.main_so_id):
 			ns, na = self.sock.accept()
+
 			if self.ssl:
-				try:
-					ns.do_handshake()
-				except ssl.SSLError as e:
-					## It's a notice, not a error. Started in Python3.7.2 - Not sure why.
-					if e.errno == 1 and 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in e.args[1]:
-						pass
+				#sleep(1)
+				#while self.poll(fileno=ns.fileno()):
+				#	print('Got data!')
+				#	print(ns.recv(8192))
+
+				#context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH) #ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+				#context.load_default_certs()
+
+				context = SSL.Context(SSL.TLSv1_2_METHOD) # TLSv1_METHOD
+				context.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, self.certificate_verification)
+				context.set_verify_depth(9)
+
+				#context.verify_mode = ssl.CERT_REQUIRED # CERT_OPTIONAL # CERT_REQUIRED
+				#context.load_cert_chain(self.cert, self.key)
+				context.use_privatekey_file(self.key)
+				context.use_certificate_file(self.cert)
+				context.set_default_verify_paths()
+
+				context.set_mode(SSL.MODE_RELEASE_BUFFERS)
+				# openssl x509 -noout -hash -in cert.pem
+				# openssl version -d (place certs here or load manually)
+				context.load_verify_locations(None, capath='./certs/')
+				store = context.get_cert_store()
+				for cert in glob.glob('./certs/*.cer'):
+					x509 = crypto.load_certificate(cert)
+					store.add_cert(x509)
+				#	context.load_verify_locations(cafile=cert)
+
+				ns = SSL.Connection(context, ns)
+				ns.set_accept_state()
+				#ns = context.wrap_socket(ns, server_side=True, do_handshake_on_connect=False)
+
+				#except ssl.SSLError as e:
+				#	## It's a notice, not a error. Started in Python3.7.2 - Not sure why.
+				#	if e.errno == 1 and 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in e.args[1]:
+				#		pass
 			log('Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=5, origin='slimHTTP', function='http_serve')
 			ns_fileno = ns.fileno()
 			if ns_fileno in self.sockets:
@@ -172,16 +265,14 @@ class http_serve():
 			self.sock.close()
 
 class https_serve(http_serve):
-	def __init__(self, cert, key, *args, **kwargs):
-		if not 'host' in kwargs: kwargs['host'] = ''
+	def __init__(self, *args, **kwargs):
 		if not 'port' in kwargs: kwargs['port'] = 443
 		super(https_serve, self).__init__(*args, **kwargs)
 		self.ssl = True
 		self.pollobj.unregister(self.sock.fileno())
 
-		context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-		context.load_cert_chain(cert, key)
-		self.sock = context.wrap_socket(self.sock, server_side=True, do_handshake_on_connect=False)
+		self.sock = self.sock
+
 		self.pollobj.register(self.sock.fileno(), EPOLLIN)
 
 imported_paths = {}
