@@ -1,7 +1,6 @@
-# Make sure you generate a cert.pem and a key.pem:
-# openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365
+import os
 
-__builtins__.__dict__['LEVEL'] = 5
+__builtins__.__dict__['LEVEL'] = 5 # TODO: <- Remove/rename this.
 __builtins__.__dict__['sockets'] = {
 }
 __builtins__.__dict__['config'] = {
@@ -19,9 +18,13 @@ __builtins__.__dict__['config'] = {
 
 ## Import sub-modules after configuration setup.
 from slimHTTP import slimhttpd
-from spiderWeb import spiderWeb
 
-https = slimhttpd.https_serve(cert='cert.pem', key='key.pem')
+if not os.path.isfile('server.crt') or not os.path.isfile('server.key'):
+	# Returns None if it couldn't generate a key/cert pair.
+	if not slimhttpd.generate_key_and_cert('server.key', cert_file='server.crt'):
+		raise OSError('Missing python-openssl.\n Run: openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365')
+		
+https = slimhttpd.https_serve(cert='server.crt', key='server.key')
 
 while 1:
 	client = https.accept()
