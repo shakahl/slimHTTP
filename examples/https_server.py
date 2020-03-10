@@ -19,7 +19,6 @@ __builtins__.__dict__['config'] = {
 
 ## Import sub-modules after configuration setup.
 from slimHTTP import slimhttpd
-from spiderWeb import spiderWeb
 
 https = slimhttpd.https_serve(cert='cert.pem', key='key.pem')
 
