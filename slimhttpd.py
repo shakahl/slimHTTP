@@ -123,7 +123,7 @@ def generate_key_and_cert(key_file, **kwargs):
 	else:
 		with open(key_file, 'wb') as fh:
 			fh.write(key_dump)
-		with open(cert_file, 'wb') as fh:
+		with open(kwargs['cert_file'], 'wb') as fh:
 			fh.write(cert_dump)
 
 	return priv_key, certificate
