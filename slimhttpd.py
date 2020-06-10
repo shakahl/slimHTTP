@@ -1,6 +1,33 @@
 import ssl, os, sys, random
 from socket import *
-from select import epoll, EPOLLIN, EPOLLOUT, EPOLLHUP
+try:
+	from select import epoll, EPOLLIN
+except:
+	import select
+	EPOLLIN = None
+	class epoll():
+		def __init__(self):
+			self.sockets = {}
+			self.monitoring = {}
+
+		def _socketregister(self, sockets):
+			self.sockets = sockets
+
+		def unregister(self, fileno, *args, **kwargs):
+			try:
+				del(self.monitoring[fileno])
+			except:
+				pass
+
+		def register(self, fileno, *args, **kwargs):
+			self.monitoring[fileno] = True
+
+		def poll(self, timeout=0.5, *args, **kwargs):
+			try:
+				return [[fileno, 1] for fileno in select.select(list(self.monitoring.keys()), [], [], timeout)[0]]
+			except OSError:
+				return []
+
 from os.path import isfile, abspath
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 #								   requires us to decode the string before guessing type.
@@ -147,6 +174,7 @@ class http_cliententity():
 		self.keep_alive = False
 		self.parent = parent
 		self.socket = sock
+		self.fileno = sock.fileno()
 		self.id = self.info['addr'][0]
 
 	def __repr__(self):
@@ -171,6 +199,7 @@ class http_cliententity():
 	#	return self.info['addr'][0] 
 
 	def close(self):
+		self.parent.pollobj.unregister(self.fileno)
 		self.socket.close()
 		return True
 
@@ -201,8 +230,8 @@ class http_serve():
 		self.sock.bind((host, port))
 		self.ssl = False
 
-		self.pollobj = epoll()
 		self.sockets = {}
+		self.pollobj = epoll()
 		self.modules = modules
 		self.methods = methods
 		self.upgrades = upgrades
