@@ -10,9 +10,6 @@ except:
 			self.sockets = {}
 			self.monitoring = {}
 
-		def _socketregister(self, sockets):
-			self.sockets = sockets
-
 		def unregister(self, fileno, *args, **kwargs):
 			try:
 				del(self.monitoring[fileno])
@@ -164,7 +161,7 @@ def drop_privileges():
 	return True
 
 class http_cliententity():
-	def __init__(self, parent, sock, addr=None):
+	def __init__(self, parent, sock, addr=None, on_close=None):
 		self.info = {'addr' : addr}
 		self.addr = addr
 
@@ -176,6 +173,9 @@ class http_cliententity():
 		self.socket = sock
 		self.fileno = sock.fileno()
 		self.id = self.info['addr'][0]
+
+		if not on_close: on_close = self.close
+		self.on_close = on_close
 
 	def __repr__(self):
 		return 'client[{}:{}]'.format(*self.info['addr'])
@@ -195,10 +195,8 @@ class http_cliententity():
 			return len(self.data)
 		return None
 
-	#def id(self):
-	#	return self.info['addr'][0] 
-
-	def close(self):
+	def close(self, *args, **kwargs):
+		del(self.parent.sockets[self.fileno])
 		self.parent.pollobj.unregister(self.fileno)
 		self.socket.close()
 		return True
@@ -220,11 +218,11 @@ class http_cliententity():
 		return True
 
 	def parse(self):
-		return http_request(self).parse()
+		return http_request(self, on_close=self.on_close).parse()
 
 
 class http_serve():
-	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80):
+	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80, on_close=None):
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
 		self.sock.bind((host, port))
@@ -235,6 +233,7 @@ class http_serve():
 		self.modules = modules
 		self.methods = methods
 		self.upgrades = upgrades
+		self.on_close = on_close
 
 		while drop_privileges() is None:
 			log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
@@ -259,7 +258,7 @@ class http_serve():
 				self.sockets[ns_fileno].close()
 				del self.sockets[ns_fileno]
 
-			self.sockets[ns_fileno] = http_cliententity(self, ns, na)
+			self.sockets[ns_fileno] = http_cliententity(self, ns, na, on_close=self.on_close)
 			self.pollobj.register(ns_fileno, EPOLLIN)
 			return self.sockets[ns_fileno]
 		return None
@@ -358,7 +357,7 @@ def get_file(root, path, headers={}, *args, **kwargs):
 	log(f'404 - Could\'t locate file {real_path}', level=3, origin='slimHTTP', function='get_file')
 
 class http_request():
-	def __init__(self, client):
+	def __init__(self, client, on_close=None):
 		""" A dummy parser that will return 200 OK on everything. """
 		self.client = client
 		self.info = client.info
@@ -381,6 +380,8 @@ class http_request():
 			self.methods[b'HEAD'] = self.HEAD
 		else:
 			self.methods = {b'GET' : self.GET, b'POST' : self.POST, b'HEAD' : self.HEAD, **self.methods}
+
+		self.on_close = on_close
 
 	def local_file(self, root, path, payload={}, headers={}, ignore_read=False, *args, **kwargs):
 		extension = os.path.splitext(path)[1]
@@ -526,7 +527,7 @@ class http_request():
 					b'upgrade' in self.headers[b'connection'].lower() and \
 					self.headers[b'upgrade'].lower() in self.client.parent.upgrades:
 				log('{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
-				upgraded = self.client.parent.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload)
+				upgraded = self.client.parent.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload, self.on_close)
 				if upgraded:
 					log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
 					self.client.parent.sockets[self.client.socket.fileno()] = upgraded
