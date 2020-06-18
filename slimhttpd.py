@@ -3,6 +3,10 @@ from socket import *
 try:
 	from select import epoll, EPOLLIN
 except:
+	""" #!if windows
+	Create a epoll() implementation that simulates the epoll() behavior.
+	This so that the rest of the code doesn't need to worry weither or not epoll() exists.
+	"""
 	import select
 	EPOLLIN = None
 	class epoll():
