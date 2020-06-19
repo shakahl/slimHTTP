@@ -1,4 +1,4 @@
-import functools
+import ipaddress
 import ssl, os, sys, random
 from socket import *
 try:
@@ -30,19 +30,123 @@ except:
 			except OSError:
 				return []
 
-class ConfError():
+class CertManager():
+	def generate_key_and_cert(key_file, **kwargs):
+		# TODO: Fallback is to use subprocess.Popen('openssl ....')
+		#       since installing additional libraries isn't always possible.
+		#       But a return of None is fine for now.
+		try:
+			from OpenSSL.crypto import load_certificate, load_privatekey, PKey, FILETYPE_PEM, TYPE_RSA, X509, X509Req, dump_certificate, dump_privatekey
+			from OpenSSL._util import ffi as _ffi, lib as _lib
+		except:
+			return None
+
+		"""
+		Will join key and cert in the same .pem file if no cert_file is given.
+		"""
+		# https://gist.github.com/kyledrake/d7457a46a03d7408da31
+		# https://github.com/cea-hpc/pcocc/blob/master/lib/pcocc/Tbon.py
+		# https://www.pyopenssl.org/en/stable/api/crypto.html
+		a_day = 60*60*24
+		if not 'cert_file' in kwargs: kwargs['cert_file'] = None
+		if not 'country' in kwargs: kwargs['country'] = 'SE'
+		if not 'sate' in kwargs: kwargs['state'] = 'Stockholm'
+		if not 'city' in kwargs: kwargs['city'] = 'Stockholm'
+		if not 'organization' in kwargs: kwargs['organization'] = 'Evil Scientist'
+		if not 'unit' in kwargs: kwargs['unit'] = 'Security'
+		if not 'cn' in kwargs: kwargs['cn'] = 'server'
+		if not 'email' in kwargs: kwargs['email'] = 'evil@scientist.cloud'
+		if not 'expires' in kwargs: kwargs['expires'] = a_day*365
+		if not 'key_size' in kwargs: kwargs['key_size'] = 4096
+		if not 'ca' in kwargs: kwargs['ca'] = None
+
+		priv_key = PKey()
+		priv_key.generate_key(TYPE_RSA, kwargs['key_size'])
+		serialnumber=random.getrandbits(64)
+
+		if not kwargs['ca']:
+			# If no ca cert/key was given, assume that we're trying
+			# to set up a CA cert and key pair.
+			certificate = X509()
+			certificate.get_subject().C = kwargs['country']
+			certificate.get_subject().ST = kwargs['state']
+			certificate.get_subject().L = kwargs['city']
+			certificate.get_subject().O = kwargs['organization']
+			certificate.get_subject().OU = kwargs['unit']
+			certificate.get_subject().CN = kwargs['cn']
+			certificate.set_serial_number(serialnumber)
+			certificate.gmtime_adj_notBefore(0)
+			certificate.gmtime_adj_notAfter(kwargs['expires'])
+			certificate.set_issuer(certificate.get_subject())
+			certificate.set_pubkey(priv_key)
+			certificate.sign(priv_key, 'sha512')
+		else:
+			# If a CA cert and key was given, assume we're creating a client
+			# certificate that will be signed by the CA.
+			req = X509Req()
+			req.get_subject().C = kwargs['country']
+			req.get_subject().ST = kwargs['state']
+			req.get_subject().L = kwargs['city']
+			req.get_subject().O = kwargs['organization']
+			req.get_subject().OU = kwargs['unit']
+			req.get_subject().CN = kwargs['cn']
+			req.get_subject().emailAddress = kwargs['email']
+			req.set_pubkey(priv_key)
+			req.sign(priv_key, 'sha512')
+
+			certificate = X509()
+			certificate.set_serial_number(serialnumber)
+			certificate.gmtime_adj_notBefore(0)
+			certificate.gmtime_adj_notAfter(kwargs['expires'])
+			certificate.set_issuer(kwargs['ca'].cert.get_subject())
+			certificate.set_subject(req.get_subject())
+			certificate.set_pubkey(req.get_pubkey())
+			certificate.sign(kwargs['ca'].key, 'sha512')
+
+		cert_dump = dump_certificate(FILETYPE_PEM, certificate)
+		key_dump = dump_privatekey(FILETYPE_PEM, priv_key)
+
+		if not os.path.isdir(os.path.abspath(os.path.dirname(key_file))):
+			os.makedirs(os.path.abspath(os.path.dirname(key_file)))
+
+		if not kwargs['cert_file']:
+			with open(key_file, 'wb') as fh:
+				fh.write(cert_dump)
+				fh.write(key_dump)
+		else:
+			with open(key_file, 'wb') as fh:
+				fh.write(key_dump)
+			with open(kwargs['cert_file'], 'wb') as fh:
+				fh.write(cert_dump)
+
+		return priv_key, certificate
+
+class ConfError(BaseException):
 	def __init__(self, message):
 		print(f'[Warn] {message}')
 
 class DeliverHttp():
 	def __init__(self, config=None):
-		if not config: self.default_config()
+		if not config: config = self.default_config()
 		## If config doesn't pass inspection, raise the error message given by check_config()
 		if (error_message := self.check_config(config)) is not True: raise error_message
 		if not 'port' in config: config['port'] = 80
 		if not 'addr' in config: config['addr'] = ''
 
 		self.config = config
+
+		self.sockets = {}
+		self.sock = socket()
+		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+		self.sock.bind((config['addr'], config['port']))
+		self.main_sock_fileno = self.sock.fileno()
+		
+		self.pollobj = epoll()
+		self.pollobj.register(self.main_sock_fileno, EPOLLIN)
+
+		self.sock.listen(10)
+		# while drop_privileges() is None:
+		# 	log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
 
 	def log(self, *args, **kwargs):
 		print('[LOG] '.join([str(x) for x in args]))
@@ -78,7 +182,13 @@ class DeliverHttp():
 		pass#print(args, kwargs)
 
 	def allow(self, allow_list, *args, **kwargs):
-		self.allow_list = allow_list
+		staging_list = []
+		for item in allow_list:
+			if '/' in item:
+				staging_list.append(ipaddress.ip_network(item, strict=False))
+			else:
+				staging_list.append(ipaddress.ip_address(item))
+		self.allow_list = set(staging_list)
 		return self.on_accept_callback
 
 	def on_accept_callback(self, f, *args, **kwargs):
@@ -90,11 +200,38 @@ class DeliverHttp():
 	def on_close(self, f, *args, **kwargs):
 		self.on_close_func = f
 
+	def on_upgrade(self, f, *args, **kwargs):
+		self.on_upgrade = f
+
+	def on_upgrade_func(self, identity=None, *args, **kwargs):
+		print('On upgrade:', identity, args, kwargs)
+
 	def on_close_func(self, identity=None, *args, **kwargs):
 		print('On close:', identity, args, kwargs)
 
-	def poll(self):
-		self.poller
+	def poll(self, timeout=0.2):
+		for socket, event_type in self.pollobj.poll(timeout):
+			if socket == self.main_sock_fileno:
+				ns, na = self.sock.accept()
+				ip_address = ipaddress.ip_address(na[0])
+				
+				## Begin the allow/deny process
+				allow = True
+				if self.allow_list:
+					allow = False
+					for net in self.allow_list:
+						if ip_address in net or ipaddress == net:
+							allow = True
+							break
+
+				if not allow:
+					print(na[0], 'not in allow_list')
+					ns.close()
+					continue
+
+				
+				print(ns, na)
+			yield (event, obj)
 
 class DeliverHttps(DeliverHttp):
 	def __init__(self, config=None):
@@ -138,126 +275,6 @@ from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 from json import dumps
 from time import time, sleep
 import importlib.util
-
-#ifdef !log (Yea I know, this should be a 'from main import log' or at least a try/catch)
-if not 'log' in __builtins__ or ('__dict__' in __builtins__ and not 'log' in __builtins__.__dict__):
-	def _log(*args, **kwargs):
-		if not 'level' in kwargs or kwargs['level'] <= LEVEL:
-			## TODO: Try journald first, print as backup
-			print(args, kwargs)
-			#with open('debug.log', 'a') as output:
-			#	output.write('{}, {}\n'.format(args, kwargs))
-	try:
-		__builtins__.__dict__['log'] = _log
-	except:
-		__builtins__['log'] = _log
-
-#ifdef
-if not 'config' in __builtins__ or ('__dict__' in __builtins__ and not 'config' in __builtins__.__dict__):
-	config = {}
-
-#ifdef
-if not 'slimhttp' in config:
-	config['slimhttp'] = {
-		'web_root' : '/srv/http',
-		'index' : 'index.html',
-		'vhosts' : {
-			'domain.me' : {
-				'web_root' : '/srv/http/domain.me',
-				'index' : 'index.html'
-			}
-		}
-	}
-
-def generate_key_and_cert(key_file, **kwargs):
-	# TODO: Fallback is to use subprocess.Popen('openssl ....')
-	#       since installing additional libraries isn't always possible.
-	#       But a return of None is fine for now.
-	try:
-		from OpenSSL.crypto import load_certificate, load_privatekey, PKey, FILETYPE_PEM, TYPE_RSA, X509, X509Req, dump_certificate, dump_privatekey
-		from OpenSSL._util import ffi as _ffi, lib as _lib
-	except:
-		return None
-
-	"""
-	Will join key and cert in the same .pem file if no cert_file is given.
-	"""
-	# https://gist.github.com/kyledrake/d7457a46a03d7408da31
-	# https://github.com/cea-hpc/pcocc/blob/master/lib/pcocc/Tbon.py
-	# https://www.pyopenssl.org/en/stable/api/crypto.html
-	a_day = 60*60*24
-	if not 'cert_file' in kwargs: kwargs['cert_file'] = None
-	if not 'country' in kwargs: kwargs['country'] = 'SE'
-	if not 'sate' in kwargs: kwargs['state'] = 'Stockholm'
-	if not 'city' in kwargs: kwargs['city'] = 'Stockholm'
-	if not 'organization' in kwargs: kwargs['organization'] = 'Evil Scientist'
-	if not 'unit' in kwargs: kwargs['unit'] = 'Security'
-	if not 'cn' in kwargs: kwargs['cn'] = 'server'
-	if not 'email' in kwargs: kwargs['email'] = 'evil@scientist.cloud'
-	if not 'expires' in kwargs: kwargs['expires'] = a_day*365
-	if not 'key_size' in kwargs: kwargs['key_size'] = 4096
-	if not 'ca' in kwargs: kwargs['ca'] = None
-
-	priv_key = PKey()
-	priv_key.generate_key(TYPE_RSA, kwargs['key_size'])
-	serialnumber=random.getrandbits(64)
-
-	if not kwargs['ca']:
-		# If no ca cert/key was given, assume that we're trying
-		# to set up a CA cert and key pair.
-		certificate = X509()
-		certificate.get_subject().C = kwargs['country']
-		certificate.get_subject().ST = kwargs['state']
-		certificate.get_subject().L = kwargs['city']
-		certificate.get_subject().O = kwargs['organization']
-		certificate.get_subject().OU = kwargs['unit']
-		certificate.get_subject().CN = kwargs['cn']
-		certificate.set_serial_number(serialnumber)
-		certificate.gmtime_adj_notBefore(0)
-		certificate.gmtime_adj_notAfter(kwargs['expires'])
-		certificate.set_issuer(certificate.get_subject())
-		certificate.set_pubkey(priv_key)
-		certificate.sign(priv_key, 'sha512')
-	else:
-		# If a CA cert and key was given, assume we're creating a client
-		# certificate that will be signed by the CA.
-		req = X509Req()
-		req.get_subject().C = kwargs['country']
-		req.get_subject().ST = kwargs['state']
-		req.get_subject().L = kwargs['city']
-		req.get_subject().O = kwargs['organization']
-		req.get_subject().OU = kwargs['unit']
-		req.get_subject().CN = kwargs['cn']
-		req.get_subject().emailAddress = kwargs['email']
-		req.set_pubkey(priv_key)
-		req.sign(priv_key, 'sha512')
-
-		certificate = X509()
-		certificate.set_serial_number(serialnumber)
-		certificate.gmtime_adj_notBefore(0)
-		certificate.gmtime_adj_notAfter(kwargs['expires'])
-		certificate.set_issuer(kwargs['ca'].cert.get_subject())
-		certificate.set_subject(req.get_subject())
-		certificate.set_pubkey(req.get_pubkey())
-		certificate.sign(kwargs['ca'].key, 'sha512')
-
-	cert_dump = dump_certificate(FILETYPE_PEM, certificate)
-	key_dump = dump_privatekey(FILETYPE_PEM, priv_key)
-
-	if not os.path.isdir(os.path.abspath(os.path.dirname(key_file))):
-		os.makedirs(os.path.abspath(os.path.dirname(key_file)))
-
-	if not kwargs['cert_file']:
-		with open(key_file, 'wb') as fh:
-			fh.write(cert_dump)
-			fh.write(key_dump)
-	else:
-		with open(key_file, 'wb') as fh:
-			fh.write(key_dump)
-		with open(kwargs['cert_file'], 'wb') as fh:
-			fh.write(cert_dump)
-
-	return priv_key, certificate
 
 def as_complex(o):
 	if type(o) == bytes:
