@@ -1,5 +1,12 @@
 import ipaddress
 import ssl, os, sys, random
+from os.path import isfile, abspath
+from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
+#								   requires us to decode the string before guessing type.
+from json import dumps
+from time import time, sleep
+import importlib.util
+
 from socket import *
 try:
 	from select import epoll, EPOLLIN
@@ -29,6 +36,82 @@ except:
 				return [[fileno, 1] for fileno in select.select(list(self.monitoring.keys()), [], [], timeout)[0]]
 			except OSError:
 				return []
+
+HTTP = 0b0001
+HTTPS = 0b0010
+def host(mode=HTTPS, *args, **kwargs):
+	"""
+	host() is essentially just a router.
+	It routes a mode and sets up a instance for serving HTTP or HTTPS.
+	"""
+	if mode == HTTPS:
+		return HTTPS_SERVER(*args, **kwargs)
+	elif mode == HTTP:
+		return HTTP_SERVER(*args, **kwargs)
+
+def as_complex(o):
+	if type(o) == bytes:
+		return o.decode('UTF-8')
+	return o
+
+def drop_privileges():
+	return True
+
+imported_paths = {}
+def handle_py_request(request):
+	path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
+	old_version = False
+	request.CLIENT_IDENTITY.server.log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
+	if path not in imported_paths:
+		## https://justus.science/blog/2015/04/19/sys.modules-is-dangerous.html
+		try:
+			request.CLIENT_IDENTITY.server.log(f'Loading : {path}', level=4, origin='slimHTTP')
+			spec = importlib.util.spec_from_file_location(path, path)
+			imported_paths[path] = importlib.util.module_from_spec(spec)
+			spec.loader.exec_module(imported_paths[path])
+			sys.modules[path] = imported_paths[path]
+		except (SyntaxError, ModuleNotFoundError) as e:
+			request.CLIENT_IDENTITY.server.log(f'Failed to load file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
+			return None
+	else:
+		request.CLIENT_IDENTITY.server.log(f'Reloading: {path}', level=4, origin='slimHTTP', function='handle_py_request')
+		try:
+			raise SyntaxError('https://github.com/Torxed/ADderall/issues/11')
+		except SyntaxError as e:
+			old_version = True
+			request.CLIENT_IDENTITY.server.log(f'Failed to reload requested file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
+	return old_version, imported_paths[f'{path}']
+
+def get_file(request, ignore_read=False):
+	real_path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
+	request.CLIENT_IDENTITY.server.log(f'Trying to fetch "{real_path}"', level=5, source='get_file')
+	if b'range' in request.request_headers:
+		_, data_range = request.request_headers[b'range'].split(b'=',1)
+		start, stop = [int(x) for x in data_range.split(b'-')]
+		request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}', level=5, source='get_file')
+	else:
+		start, stop = None, None
+
+	extension = os.path.splitext(real_path)[1]
+
+	if isfile(real_path) and extension != '.py':
+		if ignore_read is False:
+			with open(real_path, 'rb') as fh:
+				if start:
+					fh.seek(start)
+				if stop:
+					data = fh.read(stop-start)
+				else:
+					data = fh.read()
+		else:
+			data = b''
+		
+		filesize = os.stat(real_path).st_size
+		request.CLIENT_IDENTITY.server.log(f'Returning file content: {len(data)} (actual size: {filesize})', level=5, source='get_file')
+		return 200, real_path, filesize, data
+
+	request.CLIENT_IDENTITY.server.log(f'404 - Could\'t locate file {real_path}', level=3, source='get_file')
+	return 404, '404.html', -1, b'<html><head><title>404 - Not found</title></head><body>404 - Not found</body></html>'
 
 class CertManager():
 	def generate_key_and_cert(key_file, **kwargs):
@@ -125,7 +208,29 @@ class ConfError(BaseException):
 	def __init__(self, message):
 		print(f'[Warn] {message}')
 
-class DeliverHttp():
+class NotYetImplemented(BaseException):
+	def __init__(self, message):
+		print(f'[Warn] {message}')
+
+class UpgradeIssue(BaseException):
+	def __init__(self, message):
+		print(f'[Error] {message}')
+
+class Events():
+	SERVER_ACCEPT = 0b10000000
+	SERVER_CLOSE = 0b10000001
+	SERVER_RESTART = 0b00000010
+
+	CLIENT_DATA = 0b01000000
+	CLIENT_REQUEST = 0b01000001
+	CLIENT_RESPONSE_DATA = 0b01000010
+	CLIENT_UPGRADED = 0b01000011
+	CLIENT_UPGRADE_ISSUE = 0b01000100
+	CLIENT_URL_ROUTED = 0b01000101
+
+	NOT_YET_IMPLEMENTED = 0b00000000
+
+class HTTP_SERVER():
 	def __init__(self, config=None):
 		if not config: config = self.default_config()
 		## If config doesn't pass inspection, raise the error message given by check_config()
@@ -134,6 +239,7 @@ class DeliverHttp():
 		if not 'addr' in config: config['addr'] = ''
 
 		self.config = config
+		self.allow_list = None
 
 		self.sockets = {}
 		self.sock = socket()
@@ -145,6 +251,12 @@ class DeliverHttp():
 		self.pollobj.register(self.main_sock_fileno, EPOLLIN)
 
 		self.sock.listen(10)
+
+		self.methods = {
+			b'GET' : self.GET_func
+		}
+		self.routes = {}
+
 		# while drop_privileges() is None:
 		# 	log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
 
@@ -159,6 +271,9 @@ class DeliverHttp():
 				if not 'web_root' in conf['vhosts'][host]: return ConfError(f'Missing "web_root" in vhost {host}\'s configuration.')
 				if not 'index' in conf['vhosts'][host]: return ConfError(f'Missing "index" in vhost {host}\'s configuration.')
 		return True
+
+	def unregister(self, identity):
+		self.pollobj.unregister(identity.fileno)
 
 	def default_config(self):
 		return {
@@ -178,8 +293,73 @@ class DeliverHttp():
 			if self.check_config(staging_config) is True:
 				self.config = staging_config
 
-	def method_GET(self, *args, **kwargs):
-		pass#print(args, kwargs)
+	def GET(self, f, *args, **kwargs):
+		self.methods[b'GET'] = f
+
+	def GET_func(self, request):
+		return self.local_file(request)
+
+	def REQUESTED_METHOD(self, request):
+		if request.request_headers[b'METHOD'] in self.methods:
+			return self.methods[request.request_headers[b'METHOD']](request)
+
+	def local_file(self, request):
+		path = request.request_headers[b'URL']
+		extension = os.path.splitext(path)[1]
+		if extension == '.py':
+			if isfile(f'{request.web_root}/{path}'):
+				if (handle := handle_py_request(f'{request.web_root}/{path}')):
+
+					response = handle.process(request)
+					if response:
+						if len(response) == 1: response = {}, response # Assume payload, and pad with headers
+						respond_headers, response = response
+
+						if respond_headers:
+							if b'_code' in respond_headers:
+								request.ret_code = respond_headers[b'_code']
+								del(respond_headers[b'_code']) # Ugly hack.. Don't like.. TODO! Fix!
+							for header in respond_headers:
+								request.response_headers[header] = respond_headers[header]
+
+							if not b'Content-Type' in respond_headers:
+								request.response_headers[b'Content-Type'] = b'text/html'
+
+						else:
+							request.response_headers[b'Content-Type'] = b'text/html'
+				else:
+					response = b''
+					request.response_headers[b'Content-Type'] = b'plain/text'
+
+				if not b'Content-Length' in request.response_headers:
+					request.response_headers[b'Content-Length'] = bytes(str(len(response)), 'UTF-8')
+				return response
+			else:
+				print(404)
+				request.ret_code = 404
+				data = None
+		else:
+			data = get_file(request)
+			if data:
+				request.ret_code, path, length, data = data
+				mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
+				if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
+				if b'range' in request.request_headers:
+					_, data_range = request.request_headers[b'range'].split(b'=',1)
+					start, stop = [int(x) for x in data_range.split(b'-')]
+					request.response_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
+					request.ret_code = 206
+				else:
+					if mime == 'application/octet-stream':
+						request.response_headers[b'Accept-Ranges'] = b'bytes'
+
+				request.response_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
+				request.response_headers[b'Content-Length'] = bytes(str(len(data)), 'UTF-8')
+			else:
+				request.ret_code = 404
+				data = None
+
+		return data
 
 	def allow(self, allow_list, *args, **kwargs):
 		staging_list = []
@@ -192,10 +372,14 @@ class DeliverHttp():
 		return self.on_accept_callback
 
 	def on_accept_callback(self, f, *args, **kwargs):
-		self.on_accept = f
+		if f:
+			self.on_accept = f
 
-	def on_accept(self, *args, **kwargs):
-		pass
+	def on_accept(self, f, *args, **kwargs):
+		self.on_accept_func = f
+
+	def on_accept_func(self, socket, ip, source_port, *args, **kwargs):
+		return HTTP_CLIENT_IDENTITY(self, socket, ip, on_close=self.on_close_func)
 
 	def on_close(self, f, *args, **kwargs):
 		self.on_close_func = f
@@ -209,34 +393,69 @@ class DeliverHttp():
 	def on_close_func(self, identity=None, *args, **kwargs):
 		print('On close:', identity, args, kwargs)
 
-	def poll(self, timeout=0.2):
-		for socket, event_type in self.pollobj.poll(timeout):
-			if socket == self.main_sock_fileno:
-				ns, na = self.sock.accept()
-				ip_address = ipaddress.ip_address(na[0])
-				
-				## Begin the allow/deny process
-				allow = True
-				if self.allow_list:
-					allow = False
-					for net in self.allow_list:
-						if ip_address in net or ipaddress == net:
-							allow = True
-							break
+	def poll(self, timeout=0.2, fileno=None):
+		for left_over in self.sockets:
+			if self.sockets[left_over].has_data():
+				yield self.do_the_dance(left_over)
 
-				if not allow:
-					print(na[0], 'not in allow_list')
-					ns.close()
-					continue
+		for socket_fileno, event_type in self.pollobj.poll(timeout):
+			if fileno:
+				if socket_fileno == fileno:
+					yield (socket_fileno, event_type)
+			else:
+				if socket_fileno == self.main_sock_fileno:
+					client_socket, client_address = self.sock.accept()
+					client_fileno = client_socket.fileno()
+					ip_address = ipaddress.ip_address(client_address[0])
+					
+					## Begin the allow/deny process
+					allow = True
+					if self.allow_list:
+						allow = False
+						for net in self.allow_list:
+							if ip_address in net or ipaddress == net:
+								allow = True
+								break
 
-				
-				print(ns, na)
-			yield (event, obj)
+					if not allow:
+						print(client_address[0], 'not in allow_list')
+						client_socket.close()
+						continue
 
-class DeliverHttps(DeliverHttp):
+					identity = self.on_accept_func(socket=client_socket, ip=client_address[0], source_port=client_address[1])
+					if not identity:
+						identity = HTTP_CLIENT_IDENTITY(self, client_socket, client_address, on_close=self.on_close_func)
+
+					self.sockets[client_fileno] = identity
+					self.pollobj.register(client_fileno, EPOLLIN)
+					yield (Events.SERVER_ACCEPT, identity)
+				else:
+					## Check for data
+					for client_event, *client_event_data in self.sockets[socket_fileno].poll(timeout, force_recieve=True):
+						yield (client_event, client_event_data) # Yield "we got data" event
+
+						if client_event == Events.CLIENT_DATA:
+							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
+
+	def do_the_dance(self, fileno):
+		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
+			yield (parse_event, client_parsed_data)
+
+			if parse_event == Events.CLIENT_REQUEST:
+				for response_event, *client_response_data in client_parsed_data[0].parse():
+					yield (response_event, client_response_data)
+
+					if client_response_data:
+						self.sockets[fileno].send(client_response_data[0])
+
+					if not self.sockets[fileno].keep_alive:
+						self.sockets[fileno].close()
+
+
+class HTTPS_SERVER(HTTP_SERVER):
 	def __init__(self, config=None):
 		if not config: config = self.default_config()
-		DeliverHttp.__init__(self, config=config)
+		HTTP_SERVER.__init__(self, config=config)
 
 	def default_config(self):
 		## TODO: generate cert if not existing.
@@ -253,338 +472,122 @@ class DeliverHttps(DeliverHttp):
 			}
 		}
 
-
-HTTP = 0b0001
-HTTPS = 0b0010
-def host(mode=HTTPS, *args, **kwargs):
-	"""
-	host() is essentially just a router.
-	It routes a mode and sets up a instance for serving HTTP or HTTPS.
-	"""
-	if mode == HTTPS:
-		return DeliverHttps(*args, **kwargs)
-	elif mode == HTTP:
-		return DeliverHttp(*args, **kwargs)
-
-
-
-
-from os.path import isfile, abspath
-from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
-#								   requires us to decode the string before guessing type.
-from json import dumps
-from time import time, sleep
-import importlib.util
-
-def as_complex(o):
-	if type(o) == bytes:
-		return o.decode('UTF-8')
-	return o
-
-def drop_privileges():
-	return True
-
-class http_cliententity():
-	def __init__(self, parent, sock, addr=None, on_close=None):
-		self.info = {'addr' : addr}
-		self.addr = addr
-
-		self.data = b''
-
-		self.upgraded = False
+class HTTP_CLIENT_IDENTITY():
+	def __init__(self, server, socket, address, on_close=None):
+		self.server = server
+		self.socket = socket
+		self.fileno = socket.fileno()
+		self.buffer_size = 8192
+		self.address = address
+		self.closing = False
 		self.keep_alive = False
-		self.parent = parent
-		self.socket = sock
-		self.fileno = sock.fileno()
-		self.id = self.info['addr'][0]
 
-		if not on_close: on_close = self.close
-		self.on_close = on_close
+		self.buffer = b''
+
+		if on_close: self.on_close = on_close
+
+	def close(self):
+		if not self.closing:
+			self.closing = True
+			self.on_close(self)
+
+	def on_close(self, *args, **kwargs):
+		if not self.closing:
+			self.server.on_close_func(self)
+
+	def poll(self, timeout=0.2, force_recieve=False):
+		"""
+		@force_recieve: If the caller knows there's data, we can override
+		the polling event and skip straight to data recieving.
+		"""
+		if force_recieve or list(self.server.poll(timeout, fileno=self.fileno)):
+			try:
+				d = self.socket.recv(self.buffer_size)
+			except: # There's to many errors that can be thrown here for differnet reasons, SSL, OSError, Connection errors etc.
+			        # They all mean the same thing, things broke and the client couldn't deliver data accordingly so eject.
+				d = ''
+
+			if len(d) == 0:
+				return self.on_close(self)
+
+			self.buffer += d
+			yield (Events.CLIENT_DATA, len(self.buffer))
+
+	def send(self, data):
+		self.socket.send(data)
+
+	def build_request(self):
+		yield (Events.CLIENT_REQUEST, HTTP_REQUEST(self))
+
+	def has_data(self):
+		if self.closing: return False
+		return True if len(self.buffer) else False
 
 	def __repr__(self):
-		return 'client[{}:{}]'.format(*self.info['addr'])
+		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}>'
 
-	def recv(self, buffert=8192):
-		if self.parent.poll(fileno=self.socket.fileno()):
-			try:
-				d = self.socket.recv(buffert)
-			#except ConnectionResetError:
-			#	d = ''
-			except: # There's to many errors that can be thrown here for the same reasons, SSL, OSError, Connection errors etc. They all mean the same thing, things broke and the client couldn't deliver data accordingly.
-				d = ''
-			if len(d) == 0:
-				self.close()
-				return None
-			self.data += d
-			return len(self.data)
-		return None
-
-	def close(self, *args, **kwargs):
-		del(self.parent.sockets[self.fileno])
-		self.parent.pollobj.unregister(self.fileno)
-		self.socket.close()
-		return True
-
-	def send(self, d):
-		self.respond(d)
-
-	def respond(self, d):
-		if d is None: d = b'HTTP/1.1 200 OK\r\n\r\n'
-
-		if type(d) == dict: d = dumps(d)
-		if type(d) != bytes: d = bytes(d, 'UTF-8')
-
-		#print('>', d)
-		try:
-			self.socket.send(d)
-		except OSError: # TODO: close socket and delete from poller
-			return False
-		return True
-
-	def parse(self):
-		return http_request(self, on_close=self.on_close).parse()
-
-class http_serve():
-	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80, on_close=None):
-		self.sock = socket()
-		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-		self.sock.bind((host, port))
-		self.ssl = False
-
-		self.sockets = {}
-		self.pollobj = epoll()
-		self.modules = modules
-		self.methods = methods
-		self.upgrades = upgrades
-		self.on_close = on_close
-
-		while drop_privileges() is None:
-			log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
-
-		self.sock.listen(10)
-		self.main_so_id = self.sock.fileno()
-		self.pollobj.register(self.sock.fileno(), EPOLLIN)
-
-	def accept(self, client_trap=http_cliententity):
-		if self.poll(0.001, fileno=self.main_so_id):
-			ns, na = self.sock.accept()
-			if self.ssl:
-				try:
-					ns.do_handshake()
-				except ssl.SSLError as e:
-					## It's a notice, not a error. Started in Python3.7.2 - Not sure why.
-					if e.errno == 1 and 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in e.args[1]:
-						pass
-			log('Accepting new client: {addr}'.format(**{'addr' : na[0]}), level=5, origin='slimHTTP', function='http_serve')
-			ns_fileno = ns.fileno()
-			if ns_fileno in self.sockets:
-				self.sockets[ns_fileno].close()
-				del self.sockets[ns_fileno]
-
-			self.sockets[ns_fileno] = http_cliententity(self, ns, na, on_close=self.on_close)
-			self.pollobj.register(ns_fileno, EPOLLIN)
-			return self.sockets[ns_fileno]
-		return None
-
-	def poll(self, timeout=0.001, fileno=None):
-		d = dict(self.pollobj.poll(timeout))
-		if fileno: return d[fileno] if fileno in d else None
-		return d
-
-	def close(self, fileno=None):
-		if fileno:
-			try:
-				log(f'closing fileno: {fileno}', level=5, origin='slimHTTP', function='http_serve')
-				self.pollobj.unregister(fileno)
-			except FileNotFoundError:
-				pass # Already unregistered most likely.
-			if fileno in self.sockets:
-				self.sockets[fileno].close()
-			return True
-		else:
-			for fileno in self.sockets:
-				try:
-					log(f'closing fileno: {fileno}', level=5, origin='slimHTTP', function='http_serve')
-					self.pollobj.unregister(fileno)
-					self.sockets[fileno].socket.close()
-				except:
-					pass
-			self.pollobj.unregister(self.main_so_id)
-			self.sock.close()
-
-class https_serve(http_serve):
-	def __init__(self, cert, key, *args, **kwargs):
-		if not 'host' in kwargs: kwargs['host'] = ''
-		if not 'port' in kwargs: kwargs['port'] = 443
-		super(https_serve, self).__init__(*args, **kwargs)
-		self.ssl = True
-		self.pollobj.unregister(self.sock.fileno())
-
-		context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-		context.load_cert_chain(cert, key)
-		self.sock = context.wrap_socket(self.sock, server_side=True, do_handshake_on_connect=False)
-		self.pollobj.register(self.sock.fileno(), EPOLLIN)
-
-imported_paths = {}
-def handle_py_request(path):
-	old_version = False
-	log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
-	if path not in imported_paths:
-		## https://justus.science/blog/2015/04/19/sys.modules-is-dangerous.html
-		try:
-			log(f'Loading : {path}', level=4, origin='slimHTTP')
-			spec = importlib.util.spec_from_file_location(path, path)
-			imported_paths[path] = importlib.util.module_from_spec(spec)
-			spec.loader.exec_module(imported_paths[path])
-			sys.modules[path] = imported_paths[path]
-		except (SyntaxError, ModuleNotFoundError) as e:
-			log(f'Failed to load file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
-			return None
-	else:
-		log(f'Reloading: {path}', level=4, origin='slimHTTP', function='handle_py_request')
-		try:
-			raise SyntaxError('https://github.com/Torxed/ADderall/issues/11')
-		except SyntaxError as e:
-			old_version = True
-			log(f'Failed to reload requested file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
-	return old_version, imported_paths[f'{path}']
-
-def get_file(root, path, headers={}, *args, **kwargs):
-	real_path = abspath('{}/{}'.format(root, path))
-	log('Trying to fetch "{}"'.format(real_path), level=5, origin='slimHTTP', function='get_file')
-	if b'range' in headers:
-		_, data_range = headers[b'range'].split(b'=',1)
-		start, stop = [int(x) for x in data_range.split(b'-')]
-		log('Limiting to range: {}-{}'.format(start, stop), level=5, origin='slimHTTP', function='get_file')
-	else:
-		start, stop = None, None
-
-	extension = os.path.splitext(real_path)[1]
-
-	if isfile(real_path) and extension != '.py':
-		if not 'ignore_read' in kwargs or kwargs['ignore_read'] is False:
-			with open(real_path, 'rb') as fh:
-				if start:
-					fh.seek(start)
-				if stop:
-					data = fh.read(stop-start)
-				else:
-					data = fh.read()
-		else:
-			data = b''
-		
-		filesize = os.stat(real_path).st_size
-		log('Returning file content: {} (actual size: {})'.format(len(data), filesize), level=5, origin='slimHTTP', function='get_file')
-		return real_path, filesize, data
-
-	log(f'404 - Could\'t locate file {real_path}', level=3, origin='slimHTTP', function='get_file')
-
-class http_request():
-	def __init__(self, client, on_close=None):
+class HTTP_REQUEST():
+	def __init__(self, CLIENT_IDENTITY):
 		""" A dummy parser that will return 200 OK on everything. """
-		self.client = client
-		self.info = client.info
-		self.headers = {}
-		self.payload = b''
-		self.methods = client.parent.methods
-		self.ret_code = 200
-		self.ret_data = {200 : b'HTTP/1.1 200 OK\r\n',
-						 206 : b'HTTP/1.1 206 Partial Content\r\n',
-						 302 : b'HTTP/1.1 302 Found\r\n',
-						 404 : b'HTTP/1.1 404 Not Found\r\n'}
-		self.ret_headers = {} # b'Content-Type' : 'plain/text' ?
-		log('Setting up a parser for client: {}'.format(client), once=True, level=5, origin='slimHTTP', function='http_request')
+		self.CLIENT_IDENTITY = CLIENT_IDENTITY
+		self.request_headers = {}
+		self.request_payload = b''
+		self.ret_code = 200 # Default return code.
+		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
+								206 : b'HTTP/1.1 206 Partial Content\r\n',
+								302 : b'HTTP/1.1 302 Found\r\n',
+								404 : b'HTTP/1.1 404 Not Found\r\n',
+								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
+		self.response_headers = {}
+		self.CLIENT_IDENTITY.server.log(f'Building request/reponse for client: {CLIENT_IDENTITY}', level=5, source='HTTP_REQUEST')
+		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
 
-		if len(self.methods) <= 0:
-			log('No methods registered, using defaults.', once=True, level=5, origin='slimHTTP', function='http_request')
-			self.methods = {} # Detach from parent map, otherwise we'll reuse old http_request() parsers
-			self.methods[b'GET'] = self.GET
-			self.methods[b'POST'] = self.POST
-			self.methods[b'HEAD'] = self.HEAD
-		else:
-			self.methods = {b'GET' : self.GET, b'POST' : self.POST, b'HEAD' : self.HEAD, **self.methods}
+	def build_request_headers(self, data):
+		## Parse the headers
+		METHOD, header = data.split(b'\r\n',1)
+		for item in header.split(b'\r\n'):
+			if b':' in item:
+				key, val = item.split(b':',1)
+				self.request_headers[key.strip().lower()] = val.strip()
 
-		self.on_close = on_close
+		METHOD, URL, proto = METHOD.split(b' ', 2)
+		URI_QUERY = {}
+		if b'?' in URL:
+			URL, QUERIES = URL.split(b'?', 1)
+			for item in QUERIES.split(b'&'):
+				if b'=' in item:
+					k, v = item.split(b'=',1)
+					URI_QUERY[k.lower()] = v
 
-	def local_file(self, root, path, payload={}, headers={}, ignore_read=False, *args, **kwargs):
-		extension = os.path.splitext(path)[1]
-		if extension == '.py':
-			if isfile(f'{root}/{path}'):
-				response = handle_py_request(f'{root}/{path}')
-				if response:
-					old_version, handle = response
+		self.request_headers[b'URL'] = URL.decode('UTF-8')
+		self.request_headers[b'METHOD'] = METHOD
+		self.request_headers[b'URI_QUERY'] = URI_QUERY
 
-					response_data = handle.process(root=root, path=path, payload=payload, headers=headers, *args, **kwargs)
-					if response_data:
-						if len(response_data) == 1: response_data = {}, response_data # Assume payload, and pad with headers
-						respond_headers, response = response_data
+		self.vhost = None
 
-						if respond_headers:
-							if b'_code' in respond_headers:
-								self.ret_code = respond_headers[b'_code']
-								del(respond_headers[b'_code']) # Ugly hack.. Don't like.. TODO! Fix!
-							for header in respond_headers:
-								self.ret_headers[header] = respond_headers[header]
-
-							if not b'Content-Type' in respond_headers:
-								self.ret_headers[b'Content-Type'] = b'text/html'
-
-						else:
-							self.ret_headers[b'Content-Type'] = b'text/html'
-				else:
-					response = b''
-					self.ret_headers[b'Content-Type'] = b'plain/text'
-
-				if not b'Content-Length' in self.ret_headers:
-					self.ret_headers[b'Content-Length'] = bytes(str(len(response)), 'UTF-8')
-				return response
-			else:
-				print(404)
-				self.ret_code = 404
-				data = None
-		else:
-			data = get_file(root, path, headers=headers, ignore_read=ignore_read)
-			if data:
-				path, length, data = data
-				mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
-				if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
-				if b'range' in headers:
-					_, data_range = headers[b'range'].split(b'=',1)
-					start, stop = [int(x) for x in data_range.split(b'-')]
-					self.ret_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
-					self.ret_code = 206
-				else:
-					if mime == 'application/octet-stream':
-						self.ret_headers[b'Accept-Ranges'] = b'bytes'
-
-				self.ret_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
-				self.ret_headers[b'Content-Length'] = bytes(str(len(data)), 'UTF-8')
-			else:
-				self.ret_code = 404
-				data = None
-
-		return data
-
-	def PUT(self):
-		return None
-
-	def HEAD(self, request=None, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload, ignore_read=True)
-
-	def GET(self, request=None, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload)
-
-	def POST(self, request=None, headers={}, payload={}, root='./'):
-		return self.local_file(root=root, path=headers[b'path'], headers=headers, payload=payload)
+	def locate_index_file(self, index_files, return_any=True):
+		if type(index_files) == str:
+			if isfile(self.web_root + self.request_headers[b'URL'] + index_files):
+				return index_files
+			if return_any:
+				return index_files
+		elif type(index_files) in (list, tuple):
+			for file in index_files:
+				if isfile(self.web_root + self.request_headers[b'URL'] + file):
+					if not return_any:
+						return file
+					break
+			if return_any:
+				return file
 
 	def build_headers(self):
 		x = b''
-		if self.ret_code in self.ret_data:
-			x += self.ret_data[self.ret_code]# + self.build_headers() + (response if response else b'')
+		if self.ret_code in self.ret_code_mapper:
+			x += self.ret_code_mapper[self.ret_code]# + self.build_headers() + (response if response else b'')
 		else:
 			return b'HTTP/1.1 500 Internal Server Error\r\n\r\n'
 
-		for key, val in self.ret_headers.items():
+		for key, val in self.response_headers.items():
 			if type(key) != bytes: key = bytes(key, 'UTF-8')
 			if type(val) != bytes: val = bytes(val, 'UTF-8')
 			x += key + b': ' + val + b'\r\n'
@@ -592,82 +595,63 @@ class http_request():
 		return x + b'\r\n'
 
 	def parse(self):
-		# self.client.data is the client data.
-		# it is inehrited by the client() class and
-		# updated in real time.
-		if b'\r\n\r\n' in self.client.data:
-			header, self.payload = self.client.data.split(b'\r\n\r\n') # Copy and split the data so we're not working on live data.
-			method, header = header.split(b'\r\n',1)
-			for item in header.split(b'\r\n'):
-				if b':' in item:
-					key, val = item.split(b':',1)
-					self.headers[key.strip().lower()] = val.strip()
+		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
+			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n') # Copy and split the data so we're not working on live data.
+			payload = b''
 
-			method, path, proto = method.split(b' ', 2)
-			path_payload = {}
-			if b'?' in path:
-				path, payload = path.split(b'?', 1)
-				for item in payload.split(b'&'):
-					if b'=' in item:
-						k, v = item.split(b'=',1)
-						path_payload[k.lower()] = v
-
-			self.headers[b'path'] = path.decode('UTF-8')
-			self.headers[b'method'] = method
-			self.headers[b'path_payload'] = path_payload
-
-			web_root = config['slimhttp']['web_root']
-			if b'host' in self.headers and 'vhosts' in config['slimhttp'] and self.headers[b'host'].decode('UTF-8') in config['slimhttp']['vhosts']:
-				if 'web_root' in config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]:
-					web_root = config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]['web_root']
-
-			if self.headers[b'path'][-1] == '/':
-				vhost_specific_index = False
-				if b'host' in self.headers and 'vhosts' in config['slimhttp'] and self.headers[b'host'].decode('UTF-8') in config['slimhttp']['vhosts']:
-					if 'index' in config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]:
-						index_files = config['slimhttp']['vhosts'][self.headers[b'host'].decode('UTF-8')]['index']
-						if type(index_files) == str:
-							self.headers[b'path'] += index_files
-							vhost_specific_index = True
-						elif type(index_files) in (list, tuple):
-							for file in index_files:
-								if isfile(web_root + '/' + self.headers[b'path'] + file):
-									self.headers[b'path'] += file
-									vhost_specific_index = True
-									break
-
-				if not vhost_specific_index:
-					if type(config['slimhttp']['index']) == str:
-						self.headers[b'path'] += config['slimhttp']['index']
-					elif type(config['slimhttp']['index']) in (list, tuple):
-						for index in config['slimhttp']['index']:
-							if isfile(web_root + '/' + index):
-								self.headers[b'path'] += index
-								break
-
-					#self.headers[b'upgrade'].lower() == b'websocket' and \
-			if b'upgrade' in self.headers and b'connection' in self.headers and \
-					b'upgrade' in self.headers[b'connection'].lower() and \
-					self.headers[b'upgrade'].lower() in self.client.parent.upgrades:
-				log('{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
-				upgraded = self.client.parent.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload, self.on_close)
-				if upgraded:
-					log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
-					self.client.parent.sockets[self.client.socket.fileno()] = upgraded
-
-			elif method in self.methods:
-				if b'host' in self.headers:
-					host = self.headers[b'host'].decode('UTF-8')
+			self.build_request_headers(header)
+			if self.request_headers[b'METHOD'] == b'POST':
+				if b'content-length' in self.request_headers:
+					content_length = int(self.request_headers[b'content-length'].decode('UTF-8'))
+					payload = remainder[:content_length]
+					self.CLIENT_IDENTITY.buffer = remainder[content_length:] # Add back to the buffer
 				else:
-					host = 'default'
-				log('{} sent a "{}" request to path "[{}/]{} @ {}"'.format(self.client, method.decode('UTF-8'), web_root,self.headers[b'path'], host), once=True, level=5, origin='slimHTTP', function='parse')
-				response = self.methods[method](request=self, headers=self.headers, payload=self.payload, root=web_root)
+					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST without Content-Length isn\'t supported yet.'))
+
+
+			_config = self.CLIENT_IDENTITY.server.config
+			if b'host' in self.request_headers and 'vhosts' in _config and self.request_headers[b'host'].decode('UTF-8') in _config['vhosts']:
+				self.vhost = self.request_headers[b'host'].decode('UTF-8')
+				if 'web_root' in _config['vhosts'][self.vhost]:
+					self.web_root = _config['vhosts'][self.vhost]['web_root']
+
+			# If the request *ends* on a /
+			# replace it with the index file from either vhosts or default to anything if vhosts non existing.
+			if self.request_headers[b'URL'][-1] == '/':
+				print('Yepp, requesting a folder', self.vhost)
+				vhost_specific_index = False
+				if self.vhost and 'index' in _config['vhosts'][self.vhost]:
+					index_files = _config['vhosts'][self.vhost]['index']
+					if (_ := self.locate_index_file(index_files, return_any=False)):
+						self.request_headers[b'URL'] += _
+			if self.request_headers[b'URL'][-1] == '/':
+				self.request_headers[b'URL'] += self.locate_index_file(_config['index'], return_any=True)
+
+			# Find suitable upgrades if any
+			if {b'upgrade', b'connection'}.issubset(set(self.request_headers)) and b'upgrade' in self.request_headers[b'connection'].lower():
+				requested_upgrade_method = self.request_headers[b'upgrade'].lower()
+				new_identity = self.CLIENT_IDENTITY.server.on_upgrade(self)
+				if not new_identity:
+					self.client.server.log(f'{self.CLIENT_IDENTITY} has been upgraded!', level=5, source='HTTP_REQUEST.parse()')
+					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
+					yield (Events.CLIENT_UPGRADED, new_identity)
+				else:
+					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
+					return
+
+				#self.client.server.log('{} wants to upgrade with {}'.format(self.client, self.request_headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
+				#upgraded = self.client.server.upgrades[self.request_headers[b'upgrade'].lower()].upgrade(self.client, self.request_headers, self.payload, self.on_close)
+				#if upgraded:
+				#	self.client.server.log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
+				#	self.client.server.sockets[self.client.socket.fileno()] = upgraded
+
+			elif self.request_headers[b'URL'] in self.CLIENT_IDENTITY.server.routes:
+				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.request_headers[b'URL']](self))
+
+			elif (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
+				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.request_headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.request_headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
 				if type(response) == dict: response = dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
-				return self.build_headers() + response if response else self.build_headers()
+				yield (Events.CLIENT_RESPONSE_DATA, self.build_headers() + response if response else self.build_headers())
 			else:
-				log('Can\'t handle {} method.'.format(method), once=True, level=2, origin='slimHTTP', function='parse')
-		else:
-			log('Not enough data yet.', once=True, level=1, origin='slimHTTP', function='parse')
-
-		return None
+				self.CLIENT_IDENTITY.server.log(f'Can\'t handle {self.request_headers[b"METHOD"]} method.', level=2, source='HTTP_REQUEST.parse()')
