@@ -1,3 +1,4 @@
+import functools
 import ssl, os, sys, random
 from socket import *
 try:
@@ -28,6 +29,108 @@ except:
 				return [[fileno, 1] for fileno in select.select(list(self.monitoring.keys()), [], [], timeout)[0]]
 			except OSError:
 				return []
+
+class ConfError():
+	def __init__(self, message):
+		print(f'[Warn] {message}')
+
+class DeliverHttp():
+	def __init__(self, config=None):
+		if not config: self.default_config()
+		## If config doesn't pass inspection, raise the error message given by check_config()
+		if (error_message := self.check_config(config)) is not True: raise error_message
+		if not 'port' in config: config['port'] = 80
+		if not 'addr' in config: config['addr'] = ''
+
+		self.config = config
+
+	def log(self, *args, **kwargs):
+		print('[LOG] '.join([str(x) for x in args]))
+
+	def check_config(self, conf):
+		if not 'web_root' in conf: return ConfError('Missing "web_root" in configuration.')
+		if not 'index' in conf: return ConfError('Missing "index" in configuration.')
+		if 'vhosts' in conf:
+			for host in conf['vhosts']:
+				if not 'web_root' in conf['vhosts'][host]: return ConfError(f'Missing "web_root" in vhost {host}\'s configuration.')
+				if not 'index' in conf['vhosts'][host]: return ConfError(f'Missing "index" in vhost {host}\'s configuration.')
+		return True
+
+	def default_config(self):
+		return {
+			'web_root' : '/srv/http',
+			'index' : 'index.html',
+			'vhosts' : {
+				
+			},
+			'port' : 80
+		}
+
+	def configuration(self, config=None, *args, **kwargs):
+		if type(config) == dict:
+			self.config = config
+		elif config:
+			staging_config = config(instance=self)
+			if self.check_config(staging_config) is True:
+				self.config = staging_config
+
+	def method_GET(self, *args, **kwargs):
+		pass#print(args, kwargs)
+
+	def allow(self, allow_list, *args, **kwargs):
+		self.allow_list = allow_list
+		return self.on_accept_callback
+
+	def on_accept_callback(self, f, *args, **kwargs):
+		self.on_accept = f
+
+	def on_accept(self, *args, **kwargs):
+		pass
+
+	def on_close(self, f, *args, **kwargs):
+		self.on_close_func = f
+
+	def on_close_func(self, identity=None, *args, **kwargs):
+		print('On close:', identity, args, kwargs)
+
+	def poll(self):
+		self.poller
+
+class DeliverHttps(DeliverHttp):
+	def __init__(self, config=None):
+		if not config: config = self.default_config()
+		DeliverHttp.__init__(self, config=config)
+
+	def default_config(self):
+		## TODO: generate cert if not existing.
+		return {
+			'web_root' : '/srv/http',
+			'index' : 'index.html',
+			'vhosts' : {
+				
+			},
+			'port' : 443,
+			'ssl' : {
+				'cert' : 'cert.pem',
+				'key' : 'key.pem'
+			}
+		}
+
+
+HTTP = 0b0001
+HTTPS = 0b0010
+def host(mode=HTTPS, *args, **kwargs):
+	"""
+	host() is essentially just a router.
+	It routes a mode and sets up a instance for serving HTTP or HTTPS.
+	"""
+	if mode == HTTPS:
+		return DeliverHttps(*args, **kwargs)
+	elif mode == HTTP:
+		return DeliverHttp(*args, **kwargs)
+
+
+
 
 from os.path import isfile, abspath
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
@@ -223,7 +326,6 @@ class http_cliententity():
 
 	def parse(self):
 		return http_request(self, on_close=self.on_close).parse()
-
 
 class http_serve():
 	def __init__(self, modules={}, methods={}, upgrades={}, host='', port=80, on_close=None):
