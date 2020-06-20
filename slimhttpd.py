@@ -230,6 +230,28 @@ class Events():
 
 	NOT_YET_IMPLEMENTED = 0b00000000
 
+class ROUTE_HANDLER():
+	def __init__(self, route):
+		self.route = route
+		self.parser = None
+
+	def gateway(self, f):
+		self.parser = f
+
+class HTTP_RESPONSE():
+	def __init__(self, headers={}, payload=b''):
+		self.headers = headers
+		self.payload = payload
+
+	def build(self):
+		ret = b'HTTP/1.1 200 OK\r\n'
+		for key, val in self.headers.items():
+			ret += bytes(f'{key}: {val}\r\n', 'UTF-8')
+		ret += b'\r\n'
+		ret += self.payload
+		print(ret)
+		return ret
+
 class HTTP_SERVER():
 	def __init__(self, config=None):
 		if not config: config = self.default_config()
@@ -252,6 +274,8 @@ class HTTP_SERVER():
 
 		self.sock.listen(10)
 
+		self.upgraders = {}
+		self.on_upgrade_pre_func = None
 		self.methods = {
 			b'GET' : self.GET_func
 		}
@@ -384,14 +408,27 @@ class HTTP_SERVER():
 	def on_close(self, f, *args, **kwargs):
 		self.on_close_func = f
 
-	def on_upgrade(self, f, *args, **kwargs):
-		self.on_upgrade = f
+	def on_upgrade(self, methods, *args, **kwargs):
+		self.upgraders = {**self.upgraders, **methods}
+		return self.on_upgrade_router
 
-	def on_upgrade_func(self, identity=None, *args, **kwargs):
-		print('On upgrade:', identity, args, kwargs)
+	def on_upgrade_router(self, f, *args, **kwargs):
+		self.on_upgrade_pre_func = f
+
+	def on_upgrade_func(self, request, *args, **kwargs):
+		if self.on_upgrade_pre_func:
+			if self.on_upgrade_pre_func(request):
+				return None
+
+		if (upgrader := request.request_headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
+			return self.upgraders[upgrader](request)
 
 	def on_close_func(self, identity=None, *args, **kwargs):
 		print('On close:', identity, args, kwargs)
+
+	def route(self, url, *args, **kwargs):
+		self.routes[url] = ROUTE_HANDLER(url)
+		return self.routes[url].gateway
 
 	def poll(self, timeout=0.2, fileno=None):
 		for left_over in self.sockets:
@@ -446,7 +483,10 @@ class HTTP_SERVER():
 					yield (response_event, client_response_data)
 
 					if client_response_data:
-						self.sockets[fileno].send(client_response_data[0])
+						if type(client_response_data[0]) is bytes:
+							self.sockets[fileno].send(client_response_data[0])
+						elif type(client_response_data[0]) is HTTP_RESPONSE:
+							self.sockets[fileno].send(client_response_data[0].build())
 
 					if not self.sockets[fileno].keep_alive:
 						self.sockets[fileno].close()
@@ -618,7 +658,6 @@ class HTTP_REQUEST():
 			# If the request *ends* on a /
 			# replace it with the index file from either vhosts or default to anything if vhosts non existing.
 			if self.request_headers[b'URL'][-1] == '/':
-				print('Yepp, requesting a folder', self.vhost)
 				vhost_specific_index = False
 				if self.vhost and 'index' in _config['vhosts'][self.vhost]:
 					index_files = _config['vhosts'][self.vhost]['index']
@@ -630,9 +669,9 @@ class HTTP_REQUEST():
 			# Find suitable upgrades if any
 			if {b'upgrade', b'connection'}.issubset(set(self.request_headers)) and b'upgrade' in self.request_headers[b'connection'].lower():
 				requested_upgrade_method = self.request_headers[b'upgrade'].lower()
-				new_identity = self.CLIENT_IDENTITY.server.on_upgrade(self)
-				if not new_identity:
-					self.client.server.log(f'{self.CLIENT_IDENTITY} has been upgraded!', level=5, source='HTTP_REQUEST.parse()')
+				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
+				if new_identity:
+					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded!', level=5, source='HTTP_REQUEST.parse()')
 					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
 					yield (Events.CLIENT_UPGRADED, new_identity)
 				else:
@@ -646,7 +685,7 @@ class HTTP_REQUEST():
 				#	self.client.server.sockets[self.client.socket.fileno()] = upgraded
 
 			elif self.request_headers[b'URL'] in self.CLIENT_IDENTITY.server.routes:
-				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.request_headers[b'URL']](self))
+				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.request_headers[b'URL']].parser(self))
 
 			elif (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
 				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.request_headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.request_headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
