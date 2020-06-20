@@ -9,6 +9,7 @@ Supports modules for parsing WebSocket¹ traffic as well as REST api routes.
  * Static file emulation with `@http.route('/example.html')`
  * vhosts
  * ssl/tls
+ * No threading or threads used *(fully relies on `epoll()` (`select()` on Windows))*
  * flexible configuration for webroots etc via `@http.configuration`
 
 ## Minimal example
