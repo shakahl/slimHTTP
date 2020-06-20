@@ -1,15 +1,29 @@
 # slimHTTP
 A simple, minimal and flexible HTTP server.<br>
-Responds to GET or whatever protocol handlers you define as parameters to `http_serve`.<br>
-Manipulate headers, overall protocol data, payloads and session states.. Sky is the limit.
+Supports modules for parsing WebSocket traffic as well as REST api routes.
 
 ## Supports
 
+ * REST routes *(`@http.route('/some/endpoint')`)*
+ * websocket if a `@http.on_upgrade` function is defined
+ * Static file emulation with `@http.route('/example.html')`
  * vhosts
- * keep-alive
  * ssl/tls
- * websocket if a upgrade() module is supplied
- * flexible configuration for webroots etc.
+ * flexible configuration for webroots etc via `@http.configuration`
+
+## Minimal example
+
+```py
+import slimhttpd
+
+http = slimhttpd.host(slimhttpd.HTTP)
+
+while 1:
+	for event, *event_data in http.poll():
+		pass
+```
+
+The only important thing is that `.poll()` has to be called in order to process the events.
 
 ## Footnote
 

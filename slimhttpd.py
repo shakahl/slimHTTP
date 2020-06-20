@@ -228,6 +228,12 @@ class Events():
 	CLIENT_UPGRADE_ISSUE = 0b01000100
 	CLIENT_URL_ROUTED = 0b01000101
 
+	WS_CLIENT_DATA = 0b11000000
+	WS_CLIENT_REQUEST = 0b11000001
+	WS_CLIENT_COMPLETE_FRAME = 0b11000010
+	WS_CLIENT_INCOMPLETE_FRAME = 0b11000011
+	WS_CLIENT_ROUTED = 0b11000100
+
 	NOT_YET_IMPLEMENTED = 0b00000000
 
 class ROUTE_HANDLER():
@@ -408,20 +414,26 @@ class HTTP_SERVER():
 	def on_close(self, f, *args, **kwargs):
 		self.on_close_func = f
 
-	def on_upgrade(self, methods, *args, **kwargs):
-		self.upgraders = {**self.upgraders, **methods}
-		return self.on_upgrade_router
-
-	def on_upgrade_router(self, f, *args, **kwargs):
-		self.on_upgrade_pre_func = f
+	def on_upgrade(self, f, *args, **kwargs):
+		self.on_upgrade_func = f
 
 	def on_upgrade_func(self, request, *args, **kwargs):
-		if self.on_upgrade_pre_func:
-			if self.on_upgrade_pre_func(request):
-				return None
+		return None
 
-		if (upgrader := request.request_headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
-			return self.upgraders[upgrader](request)
+	# def on_upgrade(self, methods, *args, **kwargs):
+	#	self.upgraders = {**self.upgraders, **methods}
+	#	return self.on_upgrade_router
+
+	# def on_upgrade_router(self, f, *args, **kwargs):
+	#	self.on_upgrade_pre_func = f
+
+	# def on_upgrade_func(self, request, *args, **kwargs):
+	#	if self.on_upgrade_pre_func:
+	#		if self.on_upgrade_pre_func(request):
+	#			return None
+	#
+	#	if (upgrader := request.request_headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
+	#		return self.upgraders[upgrader](request)
 
 	def on_close_func(self, identity=None, *args, **kwargs):
 		print('On close:', identity, args, kwargs)
@@ -472,6 +484,7 @@ class HTTP_SERVER():
 						yield (client_event, client_event_data) # Yield "we got data" event
 
 						if client_event == Events.CLIENT_DATA:
+							print('Found data, do the dance:', socket_fileno)
 							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
 
 	def do_the_dance(self, fileno):
@@ -671,7 +684,7 @@ class HTTP_REQUEST():
 				requested_upgrade_method = self.request_headers[b'upgrade'].lower()
 				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
 				if new_identity:
-					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded!', level=5, source='HTTP_REQUEST.parse()')
+					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}', level=5, source='HTTP_REQUEST.parse()')
 					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
 					yield (Events.CLIENT_UPGRADED, new_identity)
 				else:
