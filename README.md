@@ -5,7 +5,7 @@ Supports modules for parsing WebSocket traffic as well as REST api routes.
 ## Supports
 
  * REST routes *(`@http.route('/some/endpoint')`)*
- * ¹ websockets if `@http.on_upgrade` is defined using [spiderWeb](https://github.com/Torxed/spiderWeb)
+ * *[¹]* websockets if `@http.on_upgrade` is defined using [spiderWeb](https://github.com/Torxed/spiderWeb)
  * Static file emulation with `@http.route('/example.html')`
  * vhosts
  * ssl/tls
