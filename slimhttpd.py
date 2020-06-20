@@ -435,8 +435,9 @@ class HTTP_SERVER():
 	#	if (upgrader := request.request_headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
 	#		return self.upgraders[upgrader](request)
 
-	def on_close_func(self, identity=None, *args, **kwargs):
-		print('On close:', identity, args, kwargs)
+	def on_close_func(self, CLIENT_IDENTITY, *args, **kwargs):
+		self.pollobj.unregister(CLIENT_IDENTITY.fileno)
+		CLIENT_IDENTITY.socket.close()
 
 	def route(self, url, *args, **kwargs):
 		self.routes[url] = ROUTE_HANDLER(url)
@@ -649,7 +650,7 @@ class HTTP_REQUEST():
 
 	def parse(self):
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
-			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n') # Copy and split the data so we're not working on live data.
+			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
 			payload = b''
 
 			self.build_request_headers(header)
