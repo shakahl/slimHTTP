@@ -1,6 +1,6 @@
 # slimHTTP
 A simple, minimal and flexible HTTP server.<br>
-Supports modules for parsing WebSocket traffic as well as REST api routes.
+Supports modules for parsing WebSocket¹ traffic as well as REST api routes.
 
 ## Supports
 
