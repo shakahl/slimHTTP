@@ -53,6 +53,8 @@ For this example, we'll create a endpoint called `/auth/login`. This endpoint wi
     @http.route('/auth/login')
     def handle_login(request):
         return slimhttpd.HTTP_RESPONSE(headers={'Content-Type' : 'application/json'},
-                                        payload=json.dumps({"status" : "successful"}))
+                                        payload={"status" : "successful"})
 
 In this example, we simplify the building of headers and manually creating a valid `HTTP server response <https://en.wikipedia.org/wiki/Hypertext_Transfer_Protocol#Server_response>`_ - by using :py:class:`~slimhttpd.HTTP_RESPONSE`. But building data manually is fine too.
+
+.. note:: :py:class:`~slimhttpd.HTTP_RESPONSE` will automatically convert the payload to a suitable transmission format based on the headers. No need to use `json.dumps` altho that works too.
