@@ -282,20 +282,20 @@ class HTTP_RESPONSE():
 		return ret
 
 class HTTP_SERVER():
-	def __init__(self, config=None):
-		if not config: config = self.default_config()
-		## If config doesn't pass inspection, raise the error message given by check_config()
-		if (error_message := self.check_config(config)) is not True: raise error_message
-		if not 'port' in config: config['port'] = 80
-		if not 'addr' in config: config['addr'] = ''
+	def __init__(self, *args, **kwargs):
+		if not 'port' in kwargs: kwargs['port'] = 80
+		if not 'addr' in kwargs: kwargs['addr'] = ''
 
-		self.config = config
+		self.config = {**self.default_config(), **kwargs}
 		self.allow_list = None
+		## If config doesn't pass inspection, raise the error message given by check_config()
+		if (config_error := self.check_config(self.config)) is not True:
+			raise config_error
 
 		self.sockets = {}
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-		self.sock.bind((config['addr'], config['port']))
+		self.sock.bind((self.config['addr'], self.config['port']))
 		self.main_sock_fileno = self.sock.fileno()
 		
 		self.pollobj = epoll()
@@ -319,6 +319,8 @@ class HTTP_SERVER():
 	def check_config(self, conf):
 		if not 'web_root' in conf: return ConfError('Missing "web_root" in configuration.')
 		if not 'index' in conf: return ConfError('Missing "index" in configuration.')
+		if not 'port' in conf: return ConfError('Missing "port" in configuration.')
+		if not 'addr' in conf: return ConfError('Missing "addr" in configuration.')
 		if 'vhosts' in conf:
 			for host in conf['vhosts']:
 				if not 'web_root' in conf['vhosts'][host]: return ConfError(f'Missing "web_root" in vhost {host}\'s configuration.')
@@ -339,6 +341,7 @@ class HTTP_SERVER():
 		}
 
 	def configuration(self, config=None, *args, **kwargs):
+		# TODO: Merge instead of replace config?
 		if type(config) == dict:
 			self.config = config
 		elif config:
@@ -530,9 +533,8 @@ class HTTP_SERVER():
 
 
 class HTTPS_SERVER(HTTP_SERVER):
-	def __init__(self, config=None):
-		if not config: config = self.default_config()
-		HTTP_SERVER.__init__(self, config=config)
+	def __init__(self, *args, **kwargs):
+		HTTP_SERVER.__init__(self, *args, **kwargs)
 
 	def default_config(self):
 		## TODO: generate cert if not existing.
