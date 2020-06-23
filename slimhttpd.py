@@ -608,6 +608,9 @@ class HTTP_CLIENT_IDENTITY():
 		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port}>'
 
 class HTTP_REQUEST():
+	"""
+	General request formatter passed as an object throughout the event stack.
+	"""
 	def __init__(self, CLIENT_IDENTITY):
 		""" A dummy parser that will return 200 OK on everything. """
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
