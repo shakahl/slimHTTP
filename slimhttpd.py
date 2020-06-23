@@ -552,6 +552,9 @@ class HTTPS_SERVER(HTTP_SERVER):
 		}
 
 class HTTP_CLIENT_IDENTITY():
+	"""
+	client identity passed as a reference.
+	"""
 	def __init__(self, server, socket, address, source_port, on_close=None):
 		self.server = server
 		self.socket = socket
