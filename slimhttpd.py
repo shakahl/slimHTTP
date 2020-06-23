@@ -245,17 +245,40 @@ class ROUTE_HANDLER():
 		self.parser = f
 
 class HTTP_RESPONSE():
-	def __init__(self, headers={}, payload=b''):
+	def __init__(self, headers={}, payload=b'', *args, **kwargs):
 		self.headers = headers
 		self.payload = payload
+		self.args = args
+		self.kwargs = kwargs
+
+		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
+								206 : b'HTTP/1.1 206 Partial Content\r\n',
+								301 : b'HTTP/1.0 301 Moved Permanently\r\n',
+								307 : b'HTTP/1.1 307 Temporary Redirect\r\n',
+								302 : b'HTTP/1.1 302 Found\r\n',
+								404 : b'HTTP/1.1 404 Not Found\r\n',
+								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
+
+	def build_headers(self):
+		x = b''
+		if 'ret_code' in self.kwargs and self.kwargs['ret_code'] in self.ret_code_mapper:
+			x += self.ret_code_mapper[self.kwargs['ret_code']]
+		else:
+			return b'HTTP/1.1 500 Internal Server Error\r\n\r\n'
+
+		if not 'content-length' in [key.lower() for key in self.headers.keys()]:
+			self.headers['Content-Length'] = str(len(self.payload))
+
+		for key, val in self.headers.items():
+			if type(key) != bytes: key = bytes(key, 'UTF-8')
+			if type(val) != bytes: val = bytes(val, 'UTF-8')
+			x += key + b': ' + val + b'\r\n'
+		
+		return x + b'\r\n'
 
 	def build(self):
-		ret = b'HTTP/1.1 200 OK\r\n'
-		for key, val in self.headers.items():
-			ret += bytes(f'{key}: {val}\r\n', 'UTF-8')
-		ret += b'\r\n'
+		ret = self.build_headers()
 		ret += self.payload
-		print(ret)
 		return ret
 
 class HTTP_SERVER():
@@ -409,7 +432,7 @@ class HTTP_SERVER():
 		self.on_accept_func = f
 
 	def on_accept_func(self, socket, ip, source_port, *args, **kwargs):
-		return HTTP_CLIENT_IDENTITY(self, socket, ip, on_close=self.on_close_func)
+		return HTTP_CLIENT_IDENTITY(self, socket, ip, source_port, on_close=self.on_close_func)
 
 	def on_close(self, f, *args, **kwargs):
 		self.on_close_func = f
@@ -438,6 +461,7 @@ class HTTP_SERVER():
 	def on_close_func(self, CLIENT_IDENTITY, *args, **kwargs):
 		self.pollobj.unregister(CLIENT_IDENTITY.fileno)
 		CLIENT_IDENTITY.socket.close()
+		del(self.sockets[CLIENT_IDENTITY.fileno])
 
 	def route(self, url, *args, **kwargs):
 		self.routes[url] = ROUTE_HANDLER(url)
@@ -485,7 +509,6 @@ class HTTP_SERVER():
 						yield (client_event, client_event_data) # Yield "we got data" event
 
 						if client_event == Events.CLIENT_DATA:
-							print('Found data, do the dance:', socket_fileno)
 							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
 
 	def do_the_dance(self, fileno):
@@ -527,12 +550,13 @@ class HTTPS_SERVER(HTTP_SERVER):
 		}
 
 class HTTP_CLIENT_IDENTITY():
-	def __init__(self, server, socket, address, on_close=None):
+	def __init__(self, server, socket, address, source_port, on_close=None):
 		self.server = server
 		self.socket = socket
 		self.fileno = socket.fileno()
 		self.buffer_size = 8192
 		self.address = address
+		self.source_port = source_port
 		self.closing = False
 		self.keep_alive = False
 
@@ -542,12 +566,12 @@ class HTTP_CLIENT_IDENTITY():
 
 	def close(self):
 		if not self.closing:
-			self.closing = True
 			self.on_close(self)
+			self.closing = True
 
 	def on_close(self, *args, **kwargs):
-		if not self.closing:
-			self.server.on_close_func(self)
+		self.closing = True
+		self.server.on_close_func(self)
 
 	def poll(self, timeout=0.2, force_recieve=False):
 		"""
@@ -562,13 +586,14 @@ class HTTP_CLIENT_IDENTITY():
 				d = ''
 
 			if len(d) == 0:
-				return self.on_close(self)
+				self.on_close(self)
+				return None
 
 			self.buffer += d
 			yield (Events.CLIENT_DATA, len(self.buffer))
 
 	def send(self, data):
-		self.socket.send(data)
+		return self.socket.send(data)
 
 	def build_request(self):
 		yield (Events.CLIENT_REQUEST, HTTP_REQUEST(self))
@@ -578,7 +603,7 @@ class HTTP_CLIENT_IDENTITY():
 		return True if len(self.buffer) else False
 
 	def __repr__(self):
-		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}>'
+		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port}>'
 
 class HTTP_REQUEST():
 	def __init__(self, CLIENT_IDENTITY):
