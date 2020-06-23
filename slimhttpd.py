@@ -678,13 +678,13 @@ class HTTP_REQUEST():
 	def parse(self):
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
-			payload = b''
+			self.request_payload = b''
 
 			self.build_request_headers(header)
 			if self.request_headers[b'METHOD'] == b'POST':
 				if b'content-length' in self.request_headers:
 					content_length = int(self.request_headers[b'content-length'].decode('UTF-8'))
-					payload = remainder[:content_length]
+					self.request_payload = remainder[:content_length]
 					self.CLIENT_IDENTITY.buffer = remainder[content_length:] # Add back to the buffer
 				else:
 					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST without Content-Length isn\'t supported yet.'))
