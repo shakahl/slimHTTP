@@ -679,6 +679,9 @@ class HTTP_REQUEST():
 		return x + b'\r\n'
 
 	def parse(self):
+		"""
+		Split the HTTP data into headers and body.
+		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
 			self.request_payload = b''
