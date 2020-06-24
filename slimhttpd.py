@@ -42,7 +42,7 @@ HTTPS = 0b0010
 def host(mode=HTTPS, *args, **kwargs):
 	"""
 	host() is essentially just a router.
-	It routes a mode and sets up a instance for serving HTTP or HTTPS.
+	It routes a selected mode and sets up an instance of either HTTP_SERVER or HTTPS_SERVER.
 	"""
 	if mode == HTTPS:
 		return HTTPS_SERVER(*args, **kwargs)
