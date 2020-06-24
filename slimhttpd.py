@@ -59,6 +59,9 @@ def drop_privileges():
 
 imported_paths = {}
 def handle_py_request(request):
+	"""
+		Handles the import of a specific python file.
+	"""
 	path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
 	old_version = False
 	request.CLIENT_IDENTITY.server.log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
