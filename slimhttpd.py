@@ -218,6 +218,12 @@ class UpgradeIssue(BaseException):
 		print(f'[Error] {message}')
 
 class Events():
+	"""
+	Events.<CONST> is a helper class to indicate which event is triggered.
+	Events are passed up through the event chain deep from within slimHTTP.
+
+	These events can be caught in your main `.poll()` loop, and react to different events.
+	"""
 	SERVER_ACCEPT = 0b10000000
 	SERVER_CLOSE = 0b10000001
 	SERVER_RESTART = 0b00000010
