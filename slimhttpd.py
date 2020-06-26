@@ -49,11 +49,6 @@ def host(mode=HTTPS, *args, **kwargs):
 	elif mode == HTTP:
 		return HTTP_SERVER(*args, **kwargs)
 
-def as_complex(o):
-	if type(o) == bytes:
-		return o.decode('UTF-8')
-	return o
-
 def drop_privileges():
 	return True
 
