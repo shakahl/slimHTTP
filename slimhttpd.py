@@ -205,6 +205,9 @@ class CertManager():
 
 		return priv_key, certificate
 
+class slimHTTP_Error(BaseException):
+	pass
+
 class ConfError(BaseException):
 	def __init__(self, message):
 		print(f'[Warn] {message}')
@@ -318,7 +321,10 @@ class HTTP_SERVER():
 		self.sockets = {}
 		self.sock = socket()
 		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-		self.sock.bind((self.config['addr'], self.config['port']))
+		try:
+			self.sock.bind((self.config['addr'], self.config['port']))
+		except:
+			raise slimHTTP_Error(f'Address already in use: {":".join((self.config["addr"], str(self.config["port"])))}')
 		self.main_sock_fileno = self.sock.fileno()
 		
 		self.pollobj = epoll()
