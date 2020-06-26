@@ -1,5 +1,5 @@
 import ipaddress
-import ssl, os, sys, random
+import ssl, os, sys, random, json
 from os.path import isfile, abspath
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 #								   requires us to decode the string before guessing type.
@@ -57,7 +57,7 @@ def handle_py_request(request):
 	"""
 		Handles the import of a specific python file.
 	"""
-	path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
+	path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
 	old_version = False
 	request.CLIENT_IDENTITY.server.log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
 	if path not in imported_paths:
@@ -84,10 +84,10 @@ def get_file(request, ignore_read=False):
 	"""
 	Read a local file.
 	"""
-	real_path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
+	real_path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
 	request.CLIENT_IDENTITY.server.log(f'Trying to fetch "{real_path}"', level=5, source='get_file')
-	if b'range' in request.request_headers:
-		_, data_range = request.request_headers[b'range'].split(b'=',1)
+	if b'range' in request.headers:
+		_, data_range = request.headers[b'range'].split(b'=',1)
 		start, stop = [int(x) for x in data_range.split(b'-')]
 		request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}', level=5, source='get_file')
 	else:
@@ -228,6 +228,7 @@ class Events():
 	CLIENT_UPGRADED = 0b01000011
 	CLIENT_UPGRADE_ISSUE = 0b01000100
 	CLIENT_URL_ROUTED = 0b01000101
+	CLIENT_DATA_FRAGMENTED = 0b01000110
 
 	WS_CLIENT_DATA = 0b11000000
 	WS_CLIENT_REQUEST = 0b11000001
@@ -236,6 +237,10 @@ class Events():
 	WS_CLIENT_ROUTED = 0b11000100
 
 	NOT_YET_IMPLEMENTED = 0b00000000
+
+	def convert(_int):
+		def_map = {v: k for k, v in Events.__dict__.items() if not k.startswith('__') and k != 'convert'}
+		return def_map[_int] if _int in def_map else None
 
 class ROUTE_HANDLER():
 	"""
@@ -259,6 +264,7 @@ class HTTP_RESPONSE():
 		self.payload = payload
 		self.args = args
 		self.kwargs = kwargs
+		if not 'ret_code' in self.kwargs: self.kwargs['ret_code'] = 200
 
 		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
 								206 : b'HTTP/1.1 206 Partial Content\r\n',
@@ -285,7 +291,15 @@ class HTTP_RESPONSE():
 		
 		return x + b'\r\n'
 
+	def clean_payload(self):
+		tmp = {k.lower(): v for k,v in self.headers.items()}
+		if 'content-type' in tmp and tmp['content-type'] == 'application/json' and type(self.payload) not in (bytes, str):
+			self.payload = json.dumps(self.payload)
+		if type(self.payload) != bytes:
+			self.payload = bytes(self.payload, 'UTF-8') # TODO: Swap UTF-8 for a configurable encoding..
+
 	def build(self):
+		self.clean_payload()
 		ret = self.build_headers()
 		ret += self.payload
 		return ret
@@ -365,11 +379,11 @@ class HTTP_SERVER():
 		return self.local_file(request)
 
 	def REQUESTED_METHOD(self, request):
-		if request.request_headers[b'METHOD'] in self.methods:
-			return self.methods[request.request_headers[b'METHOD']](request)
+		if request.headers[b'METHOD'] in self.methods:
+			return self.methods[request.headers[b'METHOD']](request)
 
 	def local_file(self, request):
-		path = request.request_headers[b'URL']
+		path = request.headers[b'URL']
 		extension = os.path.splitext(path)[1]
 		if extension == '.py':
 			if isfile(f'{request.web_root}/{path}'):
@@ -409,8 +423,8 @@ class HTTP_SERVER():
 				request.ret_code, path, length, data = data
 				mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
 				if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
-				if b'range' in request.request_headers:
-					_, data_range = request.request_headers[b'range'].split(b'=',1)
+				if b'range' in request.headers:
+					_, data_range = request.headers[b'range'].split(b'=',1)
 					start, stop = [int(x) for x in data_range.split(b'-')]
 					request.response_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
 					request.ret_code = 206
@@ -467,7 +481,7 @@ class HTTP_SERVER():
 	#		if self.on_upgrade_pre_func(request):
 	#			return None
 	#
-	#	if (upgrader := request.request_headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
+	#	if (upgrader := request.headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
 	#		return self.upgraders[upgrader](request)
 
 	def on_close_func(self, CLIENT_IDENTITY, *args, **kwargs):
@@ -531,7 +545,7 @@ class HTTP_SERVER():
 				for response_event, *client_response_data in client_parsed_data[0].parse():
 					yield (response_event, client_response_data)
 
-					if client_response_data:
+					if response_event in (Events.CLIENT_RESPONSE_DATA, Events.CLIENT_URL_ROUTED) and client_response_data:
 						if type(client_response_data[0]) is bytes:
 							self.sockets[fileno].send(client_response_data[0])
 						elif type(client_response_data[0]) is HTTP_RESPONSE:
@@ -626,8 +640,8 @@ class HTTP_REQUEST():
 	def __init__(self, CLIENT_IDENTITY):
 		""" A dummy parser that will return 200 OK on everything. """
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
-		self.request_headers = {}
-		self.request_payload = b''
+		self.headers = {}
+		self.payload = b''
 		self.ret_code = 200 # Default return code.
 		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
 								206 : b'HTTP/1.1 206 Partial Content\r\n',
@@ -638,13 +652,15 @@ class HTTP_REQUEST():
 		self.CLIENT_IDENTITY.server.log(f'Building request/reponse for client: {CLIENT_IDENTITY}', level=5, source='HTTP_REQUEST')
 		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
 
+		#print(self.CLIENT_IDENTITY.buffer)
+
 	def build_request_headers(self, data):
 		## Parse the headers
 		METHOD, header = data.split(b'\r\n',1)
 		for item in header.split(b'\r\n'):
 			if b':' in item:
 				key, val = item.split(b':',1)
-				self.request_headers[key.strip().lower()] = val.strip()
+				self.headers[key.strip().lower()] = val.strip()
 
 		METHOD, URL, proto = METHOD.split(b' ', 2)
 		URI_QUERY = {}
@@ -655,21 +671,21 @@ class HTTP_REQUEST():
 					k, v = item.split(b'=',1)
 					URI_QUERY[k.lower()] = v
 
-		self.request_headers[b'URL'] = URL.decode('UTF-8')
-		self.request_headers[b'METHOD'] = METHOD
-		self.request_headers[b'URI_QUERY'] = URI_QUERY
+		self.headers[b'URL'] = URL.decode('UTF-8')
+		self.headers[b'METHOD'] = METHOD
+		self.headers[b'URI_QUERY'] = URI_QUERY
 
 		self.vhost = None
 
 	def locate_index_file(self, index_files, return_any=True):
 		if type(index_files) == str:
-			if isfile(self.web_root + self.request_headers[b'URL'] + index_files):
+			if isfile(self.web_root + self.headers[b'URL'] + index_files):
 				return index_files
 			if return_any:
 				return index_files
 		elif type(index_files) in (list, tuple):
 			for file in index_files:
-				if isfile(self.web_root + self.request_headers[b'URL'] + file):
+				if isfile(self.web_root + self.headers[b'URL'] + file):
 					if not return_any:
 						return file
 					break
@@ -696,38 +712,42 @@ class HTTP_REQUEST():
 		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
-			self.request_payload = b''
+			self.payload = b''
 
 			self.build_request_headers(header)
-			if self.request_headers[b'METHOD'] == b'POST':
-				if b'content-length' in self.request_headers:
-					content_length = int(self.request_headers[b'content-length'].decode('UTF-8'))
-					self.request_payload = remainder[:content_length]
-					self.CLIENT_IDENTITY.buffer = remainder[content_length:] # Add back to the buffer
+			if self.headers[b'METHOD'] == b'POST':
+				if b'content-length' in self.headers:
+					content_length = int(self.headers[b'content-length'].decode('UTF-8'))
+					self.payload = remainder[:content_length]
+
+					if len(self.payload) < content_length:
+						return (Events.CLIENT_DATA_FRAGMENTED, self)
+
+					self.CLIENT_IDENTITY.buffer = remainder[content_length:] # Add any extended data outside of Content-Length back to the buffer
 				else:
 					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST without Content-Length isn\'t supported yet.'))
 
 
 			_config = self.CLIENT_IDENTITY.server.config
-			if b'host' in self.request_headers and 'vhosts' in _config and self.request_headers[b'host'].decode('UTF-8') in _config['vhosts']:
-				self.vhost = self.request_headers[b'host'].decode('UTF-8')
+			if b'host' in self.headers and 'vhosts' in _config and self.headers[b'host'].decode('UTF-8') in _config['vhosts']:
+				self.vhost = self.headers[b'host'].decode('UTF-8')
 				if 'web_root' in _config['vhosts'][self.vhost]:
 					self.web_root = _config['vhosts'][self.vhost]['web_root']
 
 			# If the request *ends* on a /
 			# replace it with the index file from either vhosts or default to anything if vhosts non existing.
-			if self.request_headers[b'URL'][-1] == '/':
+			if self.headers[b'URL'][-1] == '/':
 				vhost_specific_index = False
 				if self.vhost and 'index' in _config['vhosts'][self.vhost]:
 					index_files = _config['vhosts'][self.vhost]['index']
 					if (_ := self.locate_index_file(index_files, return_any=False)):
-						self.request_headers[b'URL'] += _
-			if self.request_headers[b'URL'][-1] == '/':
-				self.request_headers[b'URL'] += self.locate_index_file(_config['index'], return_any=True)
+						self.headers[b'URL'] += _
+			if self.headers[b'URL'][-1] == '/':
+				self.headers[b'URL'] += self.locate_index_file(_config['index'], return_any=True)
 
 			# Find suitable upgrades if any
-			if {b'upgrade', b'connection'}.issubset(set(self.request_headers)) and b'upgrade' in self.request_headers[b'connection'].lower():
-				requested_upgrade_method = self.request_headers[b'upgrade'].lower()
+			if {b'upgrade', b'connection'}.issubset(set(self.headers)) and b'upgrade' in self.headers[b'connection'].lower():
+				requested_upgrade_method = self.headers[b'upgrade'].lower()
 				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
 				if new_identity:
 					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}', level=5, source='HTTP_REQUEST.parse()')
@@ -737,19 +757,19 @@ class HTTP_REQUEST():
 					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
 					return
 
-				#self.client.server.log('{} wants to upgrade with {}'.format(self.client, self.request_headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
-				#upgraded = self.client.server.upgrades[self.request_headers[b'upgrade'].lower()].upgrade(self.client, self.request_headers, self.payload, self.on_close)
+				#self.client.server.log('{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
+				#upgraded = self.client.server.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload, self.on_close)
 				#if upgraded:
 				#	self.client.server.log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
 				#	self.client.server.sockets[self.client.socket.fileno()] = upgraded
 
-			elif self.request_headers[b'URL'] in self.CLIENT_IDENTITY.server.routes:
-				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.request_headers[b'URL']].parser(self))
+			elif self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes:
+				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.headers[b'URL']].parser(self))
 
 			elif (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
-				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.request_headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.request_headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
-				if type(response) == dict: response = dumps(response)
+				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
+				if type(response) == dict: response = json.dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
 				yield (Events.CLIENT_RESPONSE_DATA, self.build_headers() + response if response else self.build_headers())
 			else:
-				self.CLIENT_IDENTITY.server.log(f'Can\'t handle {self.request_headers[b"METHOD"]} method.', level=2, source='HTTP_REQUEST.parse()')
+				self.CLIENT_IDENTITY.server.log(f'Can\'t handle {self.headers[b"METHOD"]} method.', level=2, source='HTTP_REQUEST.parse()')
