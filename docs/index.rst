@@ -24,14 +24,9 @@ Some of the features of pyglet are:
    :maxdepth: 3
    :caption: API Reference
 
-   slimhttpd/CertManager
-   slimhttpd/host
-   slimhttpd/HTTP_SERVER
-   slimhttpd/HTTPS_SERVER
-   slimhttpd/HTTP_CLIENT_IDENTITY
-   slimhttpd/HTTP_REQUEST
-   slimhttpd/HTTP_RESPONSE
-   slimhttpd/ConfError
-   slimhttpd/NotYetImplemented
-   slimhttpd/UpgradeIssue
-   slimhttpd/Events
+   .. autoclass:: Events
+     :show-inheritance:
+
+     .. rubric:: Methods
+
+     .. automethod:: convert
