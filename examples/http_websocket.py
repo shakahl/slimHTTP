@@ -1,25 +1,8 @@
 import slimhttpd
-import spiderWeb
+import spiderWeb # Requires https://github.com/Torxed/spiderWeb
 
 http = slimhttpd.host(slimhttpd.HTTP)
 websocket = spiderWeb.WebSocket()
-
-@http.configuration
-def config(instance):
-	return {
-		'web_root' : './',
-		'index' : 'index.html'
-	}
-
-@http.on_close
-def close(client_identity):
-	http.unregister(client_identity)
-	client_identity.close()
-
-@http.route('/hellowWorld.html')
-def api_helloWorld(request):
- 	return slimhttpd.HTTP_RESPONSE(headers={'Content-Type' : 'text/html'},
- 									payload=b'<html><body>Test</body></html>')
 
 @websocket.route('/auth/login')
 def auth_handler(request):
@@ -34,5 +17,4 @@ def upgrade(request):
 
 while 1:
 	for event, *event_data in http.poll():
-		# print(event, event_data)
 		pass

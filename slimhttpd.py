@@ -42,23 +42,21 @@ HTTPS = 0b0010
 def host(mode=HTTPS, *args, **kwargs):
 	"""
 	host() is essentially just a router.
-	It routes a mode and sets up a instance for serving HTTP or HTTPS.
+	It routes a selected mode and sets up an instance of either HTTP_SERVER or HTTPS_SERVER.
 	"""
 	if mode == HTTPS:
 		return HTTPS_SERVER(*args, **kwargs)
 	elif mode == HTTP:
 		return HTTP_SERVER(*args, **kwargs)
 
-def as_complex(o):
-	if type(o) == bytes:
-		return o.decode('UTF-8')
-	return o
-
 def drop_privileges():
 	return True
 
 imported_paths = {}
 def handle_py_request(request):
+	"""
+		Handles the import of a specific python file.
+	"""
 	path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
 	old_version = False
 	request.CLIENT_IDENTITY.server.log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
@@ -83,6 +81,9 @@ def handle_py_request(request):
 	return old_version, imported_paths[f'{path}']
 
 def get_file(request, ignore_read=False):
+	"""
+	Read a local file.
+	"""
 	real_path = abspath('{}/{}'.format(request.web_root, request.request_headers[b'URL']))
 	request.CLIENT_IDENTITY.server.log(f'Trying to fetch "{real_path}"', level=5, source='get_file')
 	if b'range' in request.request_headers:

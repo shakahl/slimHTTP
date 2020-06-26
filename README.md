@@ -1,14 +1,18 @@
 # slimHTTP
 A simple, minimal and flexible HTTP server.<br>
-Supports modules for parsing WebSocket traffic as well as REST api routes.
+Supports modules for parsing WebSocket¹ traffic as well as REST api routes.
+
+ * slimHTTP [documentation](https://slimhttp.readthedocs.io/en/master)
+ * slimHTTP [discord](https://discord.gg/CMjZbwR) server
 
 ## Supports
 
  * REST routes *(`@http.route('/some/endpoint')`)*
- * websocket if a `@http.on_upgrade` function is defined
+ * websockets if `@http.on_upgrade` is defined using [spiderWeb](https://github.com/Torxed/spiderWeb) ¹
  * Static file emulation with `@http.route('/example.html')`
  * vhosts
  * ssl/tls
+ * No threading or threads used *(fully relies on `epoll()` (`select()` on Windows))*
  * flexible configuration for webroots etc via `@http.configuration`
 
 ## Minimal example
