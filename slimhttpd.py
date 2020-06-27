@@ -314,7 +314,30 @@ class HTTP_RESPONSE():
 		return ret
 
 class HTTP_SERVER():
+	"""
+	HTTP_SERVER is normally instanciated with :py:meth:`slimhttpd.host` which would
+	safely spin up a HTTP / HTTPS server with all the correct arguments.
+
+	In case of manual control, this class is the main server instance in charge
+	of keeping the `"addr":port` open and accepting new connections. It contains a main
+	event loop, which can be polled in order to accept new clients.
+
+	It's also in charge of polling client identities for new events and lift them up
+	to the caller of :py:func:`slimhttpd.HTTP_SERVER.poll`.
+	"""
 	def __init__(self, *args, **kwargs):
+		"""
+		`__init__` takes ambigious arguments through `**kwargs`.
+		They are passed down to `HTTP_SERVER.config` transparently and used later.
+
+		Some values are used upon `__init__` however, since they are part of the
+		initiation process, those arguments are:
+
+		:param addr: Address to listen on, default `0.0.0.0`.
+		:type addr: str
+		:param port: Port to listen on, default `80` unless HTTPS mode, in which case default is `443`.
+		:type port: int
+		"""
 		if not 'port' in kwargs: kwargs['port'] = 80
 		if not 'addr' in kwargs: kwargs['addr'] = ''
 
@@ -349,9 +372,20 @@ class HTTP_SERVER():
 		# 	log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
 
 	def log(self, *args, **kwargs):
+		"""
+		A simple print wrapper, placeholder for more advanced logging in the future.
+		Joins any `*args` together and safely calls :func:'str' on each argument.
+		"""
 		print('[LOG] '.join([str(x) for x in args]))
 
 	def check_config(self, conf):
+		"""
+		Makes sure that the given configuration *(either upon startup via `**kwargs` or
+		during annotation override of configuration (`@http.configuration`))* is correct.
+
+		:param conf: Dictionary representing a valid configuration. #TODO: Add a doc on documentation :P
+		:type conf: dict
+		"""
 		if not 'web_root' in conf: return ConfError('Missing "web_root" in configuration.')
 		if not 'index' in conf: return ConfError('Missing "index" in configuration.')
 		if not 'port' in conf: return ConfError('Missing "port" in configuration.')
@@ -363,9 +397,23 @@ class HTTP_SERVER():
 		return True
 
 	def unregister(self, identity):
+		"""
+		Unregisters a :py:class:`slimhttpd.HTTP_CLIENT_IDENTITY`  s socket by calling `self.pollobj.unregister`
+		on the client identity socket fileno.
+
+		:param identity: Any valid `*_CLIENT_IDENTITY` handler.
+		:type identity: :py:class:`slimhttpd.HTTP_CLIENT_IDENTITY` or :py:class:`spiderWeb.WS_CLIENT_IDENTITY`
+		"""
 		self.pollobj.unregister(identity.fileno)
 
 	def default_config(self):
+		"""
+		Returns a simple but sane default configuration in case no one is given.
+		Defaults to hosting the `web_root` to the `/srv/http` folder.
+
+		:return: {'web_root' : '/srv/http', 'index' : 'index.html', 'vhosts' : { }, 'port' : 80}
+		:rtype: dict
+		"""
 		return {
 			'web_root' : '/srv/http',
 			'index' : 'index.html',
@@ -376,6 +424,28 @@ class HTTP_SERVER():
 		}
 
 	def configuration(self, config=None, *args, **kwargs):
+		"""
+		A decorator which can be set with a `@http.configuration` annotation as well as directly called.
+		Using the decorator leaves some room for processing configuration before being returned
+		to this function, in cases where configuration-checks needs to be isolated to a function
+		in order to make the code neat.::
+
+
+			@app.configuration
+			def config():
+				return {
+					"web_root" : "./web-root",
+					"index" : "index.html"
+				}
+
+		.. warning::
+			The following hook would be called after socket setup.
+			There is there for no point in adding `addr` or `port` to this configuration as the socket
+			layer has already been set up.
+
+		:param config: Dictionary representing a valid configuration which will be checked with :py:func:`slimhttpd.HTTP_SERVER.check_config`.
+		:type config: dict
+		"""
 		# TODO: Merge instead of replace config?
 		if type(config) == dict:
 			self.config = config
@@ -502,10 +572,50 @@ class HTTP_SERVER():
 		del(self.sockets[CLIENT_IDENTITY.fileno])
 
 	def route(self, url, *args, **kwargs):
+		"""
+		A decorator for statically define HTTP request path's::
+
+			@app.route('/auth/login')
+			def route_handler(request):
+				print(request.headers)
+
+		.. note:: The above example will handle both GET and POST (any user-defined method actually)
+
+		.. warning:: If routes end with a `/`, they will be appended by `/[index]` and treated as a normal folder.
+				     This means that static routes ending on `/` should be defined as `@app.route('/example/index.html')` rather than `@app.route('/example/')`.
+
+		:param timeout: is in seconds
+		:type timeout: integer
+		:param fileno: Limits the return events to a specific socket/client fileno.
+		:type fileno: integer
+		:return: `tuple(Events.<type>, EVENT_DATA)`
+		:rtype: iterator
+		"""
 		self.routes[url] = ROUTE_HANDLER(url)
 		return self.routes[url].gateway
 
 	def poll(self, timeout=0.2, fileno=None):
+		"""
+		poll is to be called from the main event loop. poll will process any queues
+		in need of processing, such as accepting new clients and check for data in
+		any of the poll-objects (client sockets/identeties). A basic example of a main event loop would be::
+
+
+			import slimhttpd
+
+			http = slimhttpd.host(slimhttpd.HTTP)
+
+			while 1:
+				for event, *event_data in http.poll():
+					pass
+
+		:param timeout: is in seconds
+		:type timeout: integer
+		:param fileno: Limits the return events to a specific socket/client fileno.
+		:type fileno: integer
+		:return: `tuple(Events.<type>, EVENT_DATA)`
+		:rtype: iterator
+		"""
 		for left_over in self.sockets:
 			if self.sockets[left_over].has_data():
 				yield self.do_the_dance(left_over)
@@ -622,7 +732,7 @@ class HTTP_CLIENT_IDENTITY():
 			try:
 				d = self.socket.recv(self.buffer_size)
 			except: # There's to many errors that can be thrown here for differnet reasons, SSL, OSError, Connection errors etc.
-			        # They all mean the same thing, things broke and the client couldn't deliver data accordingly so eject.
+					# They all mean the same thing, things broke and the client couldn't deliver data accordingly so eject.
 				d = ''
 
 			if len(d) == 0:

@@ -24,9 +24,4 @@ Some of the features of pyglet are:
    :maxdepth: 3
    :caption: API Reference
 
-   .. autoclass:: Events
-     :show-inheritance:
-
-     .. rubric:: Methods
-
-     .. automethod:: convert
+   slimhttpd/HTTP_SERVER
