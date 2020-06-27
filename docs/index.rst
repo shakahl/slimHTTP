@@ -29,6 +29,7 @@ Some of the features of slimHTTP are:
    :caption: Getting help
 
    help/discord
+   help/issues
 
 .. toctree::
    :maxdepth: 3
