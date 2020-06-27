@@ -676,12 +676,18 @@ class HTTP_SERVER():
 					if not self.sockets[fileno].keep_alive:
 						self.sockets[fileno].close()
 
-
 class HTTPS_SERVER(HTTP_SERVER):
 	def __init__(self, *args, **kwargs):
 		HTTP_SERVER.__init__(self, *args, **kwargs)
 
 	def default_config(self):
+		"""
+		Returns a simple but sane default configuration in case no one is given.
+		Defaults to hosting the `web_root` to the `/srv/http` folder.
+
+		:return: {'web_root' : '/srv/http', 'index' : 'index.html', 'vhosts' : { }, 'port' : 443}
+		:rtype: dict
+		"""
 		## TODO: generate cert if not existing.
 		return {
 			'web_root' : '/srv/http',

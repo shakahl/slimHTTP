@@ -19,9 +19,31 @@ Some of the features of pyglet are:
 
    programming_guide/installation
    programming_guide/quickstart
+   programming_guide/examples
+   programming_guide/configuration
+   programming_guide/upgrade_mechanics
 
 .. toctree::
    :maxdepth: 3
    :caption: API Reference
 
+   slimhttpd/host
    slimhttpd/HTTP_SERVER
+   slimhttpd/HTTPS_SERVER
+   slimhttpd/HTTP_REQUEST
+   slimhttpd/HTTP_RESPONSE
+   slimhttpd/ROUTE_HANDLER
+   slimhttpd/HTTP_CLIENT_IDENTITY
+   slimhttpd/Events
+
+.. toctree::
+   :maxdepth: 3
+   :caption: Internal Functions
+
+   slimhttpd/handle_py_request
+   slimhttpd/get_file
+   slimhttpd/CertManager
+   slimhttpd/slimHTTP_Error
+   slimhttpd/ConfError
+   slimhttpd/NotYetImplemented
+   slimhttpd/UpgradeIssue

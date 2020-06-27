@@ -1,7 +1,7 @@
-slimhttpd.HTTP_SERVER
+slimhttpd.CertManager
 =====================
 
-.. autoclass:: slimhttpd.HTTP_SERVER
+.. autoclass:: slimhttpd.CertManager
    :show-inheritance:
    :members:
    :undoc-members:
