@@ -1,7 +1,8 @@
 slimHTTP Documentation
 ======================
 
-**slimHTTP** is a simple, minimal and flexible HTTP server. It supports modules for parsing WebSocket [1]_ traffic as well as REST api routes.
+**slimHTTP** is a simple, minimal and flexible HTTP server.
+It supports modules for parsing WebSocket [1]_ traffic as well as REST api routes.
 
 Some of the features of slimHTTP are:
 
@@ -22,6 +23,12 @@ Some of the features of slimHTTP are:
    programming_guide/examples
    programming_guide/configuration
    programming_guide/upgrade_mechanics
+
+.. toctree::
+   :maxdepth: 3
+   :caption: Getting help
+
+   help/discord
 
 .. toctree::
    :maxdepth: 3
