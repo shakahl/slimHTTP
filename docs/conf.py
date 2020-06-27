@@ -12,7 +12,7 @@ def process_docstring(app, what, name, obj, options, lines):
 
 def setup(app):
     app.connect('autodoc-process-docstring', process_docstring)
-    
+
 # Configuration file for the Sphinx documentation builder.
 #
 # This file only contains a selection of the most common options. For a full
@@ -49,8 +49,7 @@ master_doc = 'index'
 extensions = [
 	'sphinx.ext.autodoc',
 	'sphinx.ext.inheritance_diagram',
-	'sphinx.ext.todo',
-	'sphinx_autodoc_annotation'
+	'sphinx.ext.todo'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
