@@ -3,7 +3,7 @@ slimHTTP Documentation
 
 **slimHTTP** is a simple, minimal and flexible HTTP server. It supports modules for parsing WebSocket [1]_ traffic as well as REST api routes.
 
-Some of the features of pyglet are:
+Some of the features of slimHTTP are:
 
 * **No external dependencies or installation requirements.** Runs without any external requirements or installation processes.
 
