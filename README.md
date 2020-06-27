@@ -1,4 +1,4 @@
-# slimHTTP
+# <img src="docs/_static/slimHTTP.png" alt="drawing" width="200"/>
 A simple, minimal and flexible HTTP server.<br>
 Supports modules for parsing WebSocket¹ traffic as well as REST api routes.
 
