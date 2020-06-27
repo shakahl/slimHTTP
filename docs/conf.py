@@ -1,5 +1,5 @@
-#import sys, os
-#sys.path.insert(0, os.path.abspath('..'))
+import sys, os
+sys.path.insert(0, os.path.abspath('..'))
 
 import re
 
@@ -37,7 +37,7 @@ copyright = '2020, Anton Hvornum'
 author = 'Anton Hvornum'
 
 # The full version, including alpha/beta/rc tags
-release = 'v1.0-alpha'
+release = 'v1.0-beta.002'
 
 
 # -- General configuration ---------------------------------------------------
