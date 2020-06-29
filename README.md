@@ -2,7 +2,8 @@
 A simple, minimal and flexible HTTP server.<br>
 Supports modules for parsing WebSocket¹ traffic as well as REST api routes.
 
- * slimHTTP [discord](https://discord.gg/cqXU88y) server
+ * slimHTTP [documentation](https://slimhttp.readthedocs.io/en/master)
+ * slimHTTP [discord](https://discord.gg/CMjZbwR) server
 
 ## Supports
 
