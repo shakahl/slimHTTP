@@ -1,7 +1,7 @@
-import slimhttpd
+import slimHTTP
 import spiderWeb # Requires https://github.com/Torxed/spiderWeb
 
-http = slimhttpd.host(slimhttpd.HTTP)
+http = slimHTTP.host(slimHTTP.HTTP)
 websocket = spiderWeb.WebSocket()
 
 @websocket.route('/auth/login')

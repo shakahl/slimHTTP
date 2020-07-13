@@ -1,6 +1,6 @@
-import slimhttpd
+import slimHTTP
 
-http = slimhttpd.host(slimhttpd.HTTPS)
+http = slimHTTP.host(slimHTTP.HTTPS)
 
 @http.configuration
 def config(instance):

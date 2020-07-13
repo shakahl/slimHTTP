@@ -18,9 +18,9 @@ Supports modules for parsing WebSocket¹ traffic as well as REST api routes.
 ## Minimal example
 
 ```py
-import slimhttpd
+import slimHTTP
 
-http = slimhttpd.host(slimhttpd.HTTP)
+http = slimHTTP.host(slimHTTP.HTTP)
 
 while 1:
 	for event, *event_data in http.poll():

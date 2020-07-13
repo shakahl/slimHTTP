@@ -1,4 +1,4 @@
-import slimhttpd
+import slimHTTP
 import discord
 
 import aiohttp, asyncio, json
@@ -60,7 +60,7 @@ async def send_message(target, message):
 
 # Lets set up the webserver on port 80
 # (port needs to be given before @http.configuration hook because it's used at startup)
-http = slimhttpd.host(slimhttpd.HTTP, port=80, web_root='./web_root', index='index.html')
+http = slimHTTP.host(slimHTTP.HTTP, port=80, web_root='./web_root', index='index.html')
 
 # And add a route to /repo/index.html
 # We can then set up a GitHub webhook to it, which will update the discord channel each commit.
