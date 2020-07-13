@@ -1,11 +1,57 @@
+import ssl, os, sys, random, json, glob
 import ipaddress
-import ssl, os, sys, random, json
+import importlib.util
 from os.path import isfile, abspath
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 #								   requires us to decode the string before guessing type.
 from json import dumps
 from time import time, sleep
-import importlib.util
+try:
+	from OpenSSL.crypto import load_certificate, SSL, crypto, load_privatekey, PKey, FILETYPE_PEM, TYPE_RSA, X509, X509Req, dump_certificate, dump_privatekey
+	from OpenSSL._util import ffi as _ffi, lib as _lib
+except:
+	print('[Info] Could not load external lib OpenSSL, falling back to ssl')
+	class MOCK_CERT_STORE():
+		def __init__(self):
+			pass
+		def add_cert(self, *args, **kwargs):
+			pass
+	class SSL():
+		TLSv1_2_METHOD = 0b110
+		VERIFY_PEER = 0b1
+		VERIFY_FAIL_IF_NO_PEER_CERT = 0b10
+		MODE_RELEASE_BUFFERS = 0b10000
+		"""
+		This is *not* a crypto implementation!
+		This is a mock function to get certain functionality working.
+		"""
+		def __init__(self):
+			self.key = None
+			self.cert = None
+		def Context(*args, **kwargs):
+			return SSL()
+		def set_verify(self, *args, **kwargs):
+			pass
+		def set_verify_depth(self, *args, **kwargs):
+			pass
+		def use_privatekey_file(self, path, *args, **kwargs):
+			self.key = path
+		def use_certificate_file(self, path, *args, **kwargs):
+			self.cert = path
+		def set_default_verify_paths(self, *args, **kwargs):
+			pass
+		def set_mode(self, *args, **kwargs):
+			pass
+		def load_verify_locations(self, *args, **kwargs):
+			pass
+		def get_cert_store(self, *args, **kwargs):
+			return MOCK_CERT_STORE()
+		def Connection(context, socket):
+			if type(context) == SSL:
+				new_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+				new_context.load_cert_chain(context.cert, context.key)
+				context = new_context
+			return context.wrap_socket(socket, server_side=True)
 
 from socket import *
 try:
@@ -120,7 +166,7 @@ class CertManager():
 		#       since installing additional libraries isn't always possible.
 		#       But a return of None is fine for now.
 		try:
-			from OpenSSL.crypto import load_certificate, load_privatekey, PKey, FILETYPE_PEM, TYPE_RSA, X509, X509Req, dump_certificate, dump_privatekey
+			from OpenSSL.crypto import load_certificate, SSL, crypto, load_privatekey, PKey, FILETYPE_PEM, TYPE_RSA, X509, X509Req, dump_certificate, dump_privatekey
 			from OpenSSL._util import ffi as _ffi, lib as _lib
 		except:
 			return None
@@ -338,7 +384,8 @@ class HTTP_SERVER():
 		:param port: Port to listen on, default `80` unless HTTPS mode, in which case default is `443`.
 		:type port: int
 		"""
-		if not 'port' in kwargs: kwargs['port'] = 80
+		self.default_port = 80
+		if not 'port' in kwargs: kwargs['port'] = self.default_port
 		if not 'addr' in kwargs: kwargs['addr'] = ''
 
 		self.config = {**self.default_config(), **kwargs}
@@ -348,12 +395,7 @@ class HTTP_SERVER():
 			raise config_error
 
 		self.sockets = {}
-		self.sock = socket()
-		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-		try:
-			self.sock.bind((self.config['addr'], self.config['port']))
-		except:
-			raise slimHTTP_Error(f'Address already in use: {":".join((self.config["addr"], str(self.config["port"])))}')
+		self.setup_socket()
 		self.main_sock_fileno = self.sock.fileno()
 		
 		self.pollobj = epoll()
@@ -370,6 +412,15 @@ class HTTP_SERVER():
 
 		# while drop_privileges() is None:
 		# 	log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
+
+	def setup_socket(self):
+		self.sock = socket()
+		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+		try:
+			self.sock.bind((self.config['addr'], self.config['port']))
+			self.log(f"Bound to {self.config['addr']}:{self.config['port']}")
+		except:
+			raise slimHTTP_Error(f'Address already in use: {":".join((self.config["addr"], str(self.config["port"])))}')
 
 	def log(self, *args, **kwargs):
 		"""
@@ -388,8 +439,8 @@ class HTTP_SERVER():
 		"""
 		if not 'web_root' in conf: return ConfError('Missing "web_root" in configuration.')
 		if not 'index' in conf: return ConfError('Missing "index" in configuration.')
-		if not 'port' in conf: return ConfError('Missing "port" in configuration.')
-		if not 'addr' in conf: return ConfError('Missing "addr" in configuration.')
+		if not 'port' in conf: conf['port'] = self.default_port
+		if not 'addr' in conf: conf['addr'] = ''
 		if 'vhosts' in conf:
 			for host in conf['vhosts']:
 				if not 'web_root' in conf['vhosts'][host]: return ConfError(f'Missing "web_root" in vhost {host}\'s configuration.')
@@ -594,6 +645,9 @@ class HTTP_SERVER():
 		self.routes[url] = ROUTE_HANDLER(url)
 		return self.routes[url].gateway
 
+	def process_new_client(self, socket, address):
+		return socket, address
+
 	def poll(self, timeout=0.2, fileno=None):
 		"""
 		poll is to be called from the main event loop. poll will process any queues
@@ -627,6 +681,13 @@ class HTTP_SERVER():
 			else:
 				if socket_fileno == self.main_sock_fileno:
 					client_socket, client_address = self.sock.accept()
+					try:
+						client_socket, client_address = self.process_new_client(client_socket, client_address)
+					except Exception as e:
+						self.log(e)
+						client_socket.close()
+						continue
+
 					client_fileno = client_socket.fileno()
 					ip_address = ipaddress.ip_address(client_address[0])
 					
@@ -678,7 +739,16 @@ class HTTP_SERVER():
 
 class HTTPS_SERVER(HTTP_SERVER):
 	def __init__(self, *args, **kwargs):
+		self.default_port = 443
+		if not 'port' in kwargs: kwargs['port'] = self.default_port
 		HTTP_SERVER.__init__(self, *args, **kwargs)
+
+	def check_config(self, conf):
+		if not os.path.isfile(conf['ssl']['cert']):
+			raise ConfError(f"Certificate for HTTPS does not exist: {conf['ssl']['cert']}")
+		if not os.path.isfile(conf['ssl']['key']):
+			raise ConfError(f"Keyfile for HTTPS does not exist: {conf['ssl']['key']}")
+		return HTTP_SERVER.check_config(self, conf)
 
 	def default_config(self):
 		"""
@@ -701,6 +771,55 @@ class HTTPS_SERVER(HTTP_SERVER):
 				'key' : 'key.pem'
 			}
 		}
+
+	def setup_socket(self):
+		self.sock = socket()
+		self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+		#self.sock = 
+		try:
+			self.sock.bind((self.config['addr'], self.config['port']))
+			self.log(f"Bound to {self.config['addr']}:{self.config['port']}")
+		except:
+			raise slimHTTP_Error(f'Address already in use: {":".join((self.config["addr"], str(self.config["port"])))}')
+
+	def certificate_verification(self, conn, cert, errnum, depth, ret_code):
+		cert_hash = cert.get_subject().hash()
+		cert_info = dict(cert.get_subject().get_components())
+		cert_serial = cert.get_serial_number()
+		
+		# cert = ['_from_raw_x509_ptr', '_get_boundary_time', '_get_name', '_issuer_invalidator', '_set_boundary_time', '_set_name', '_subject_invalidator', '_x509', 'add_extensions', 'digest', 'from_cryptography', 'get_extension', 'get_extension_count', 'get_issuer', 'get_notAfter', 'get_notBefore', 'get_pubkey', 'get_serial_number', 'get_signature_algorithm', 'get_subject', 'get_version', 'gmtime_adj_notAfter', 'gmtime_adj_notBefore', 'has_expired', 'set_issuer', 'set_notAfter', 'set_notBefore', 'set_pubkey', 'set_serial_number', 'set_subject', 'set_version', 'sign', 'subject_name_hash', 'to_cryptography']
+		if cert_info[b'CN'] == b'Some Common Name':
+			return True
+		return False
+
+	def process_new_client(self, socket, address):
+		context = SSL.Context(SSL.TLSv1_2_METHOD) # TLSv1_METHOD
+		context.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, self.certificate_verification)
+		context.set_verify_depth(9)
+
+		#context.verify_mode = ssl.CERT_REQUIRED # CERT_OPTIONAL # CERT_REQUIRED
+		#context.load_cert_chain(self.cert, self.key)
+		context.use_privatekey_file(self.config['ssl']['key'])
+		context.use_certificate_file(self.config['ssl']['cert'])
+		context.set_default_verify_paths()
+
+		context.set_mode(SSL.MODE_RELEASE_BUFFERS)
+		# openssl x509 -noout -hash -in cert.pem
+		# openssl version -d (place certs here or load manually)
+		context.load_verify_locations(None, capath='./certs/')
+		store = context.get_cert_store()
+		for cert in glob.glob('./certs/*.cer'):
+			x509 = crypto.load_certificate(cert)
+			store.add_cert(x509)
+		#	context.load_verify_locations(cafile=cert)
+
+		socket = SSL.Connection(context, socket)
+		try:
+			socket.set_accept_state()
+		except:
+			pass # Hard to emulate this in the mock function, so this function simply doesn't exist.
+
+		return socket, address
 
 class HTTP_CLIENT_IDENTITY():
 	"""
