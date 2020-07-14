@@ -587,6 +587,16 @@ class HTTP_SERVER():
 		return self.local_file(request)
 
 	def REQUESTED_METHOD(self, request):
+		# If the request *ends* on a /
+		# replace it with the index file from either vhosts or default to anything if vhosts non existing.
+		if request.headers[b'URL'][-1] == '/':
+			if request.vhost and 'index' in self.config['vhosts'][request.vhost]:
+				index_files = self.config['vhosts'][self.vhost]['index']
+				if (_ := request.locate_index_file(index_files, return_any=False)):
+					self.headers[b'URL'] += _
+		if request.headers[b'URL'][-1] == '/':
+			request.headers[b'URL'] += request.locate_index_file(self.config['index'], return_any=True)
+
 		if request.headers[b'METHOD'] in self.methods:
 			return self.methods[request.headers[b'METHOD']](request)
 
@@ -1119,16 +1129,6 @@ class HTTP_REQUEST():
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			elif (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
-				# If the request *ends* on a /
-				# replace it with the index file from either vhosts or default to anything if vhosts non existing.
-				if self.headers[b'URL'][-1] == '/':
-					if self.vhost and 'index' in _config['vhosts'][self.vhost]:
-						index_files = _config['vhosts'][self.vhost]['index']
-						if (_ := self.locate_index_file(index_files, return_any=False)):
-							self.headers[b'URL'] += _
-				if self.headers[b'URL'][-1] == '/':
-					self.headers[b'URL'] += self.locate_index_file(_config['index'], return_any=True)
-
 				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
 				if type(response) == dict: response = json.dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
