@@ -151,11 +151,11 @@ def get_file(request, ignore_read=False):
 	Read a local file.
 	"""
 	real_path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
-	request.CLIENT_IDENTITY.server.log(f'Trying to fetch "{real_path}"', level=5, source='get_file')
+	request.CLIENT_IDENTITY.server.log(f'Opening local file "{real_path}"')
 	if b'range' in request.headers:
 		_, data_range = request.headers[b'range'].split(b'=',1)
 		start, stop = [int(x) for x in data_range.split(b'-')]
-		request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}', level=5, source='get_file')
+		request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}')
 	else:
 		start, stop = None, None
 
@@ -174,7 +174,7 @@ def get_file(request, ignore_read=False):
 			data = b''
 		
 		filesize = os.stat(real_path).st_size
-		request.CLIENT_IDENTITY.server.log(f'Returning file content: {len(data)} (actual size: {filesize})', level=5, source='get_file')
+		request.CLIENT_IDENTITY.server.log(f'Returning file content: {len(data)} (actual size: {filesize})')
 		return 200, real_path, filesize, data
 
 	request.CLIENT_IDENTITY.server.log(f'404 - Could\'t locate file {real_path}', level=3, source='get_file')
@@ -1139,5 +1139,5 @@ class HTTP_REQUEST():
 				if type(response) == dict: response = json.dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
 				yield (Events.CLIENT_RESPONSE_DATA, self.build_headers() + response if response else self.build_headers())
-			else:
-				self.CLIENT_IDENTITY.server.log(f'Can\'t handle {self.headers[b"METHOD"]} method.', level=2, source='HTTP_REQUEST.parse()')
+			#else:
+			#	self.CLIENT_IDENTITY.server.log(f'Can\'t handle {self.headers[b"METHOD"]} method.')
