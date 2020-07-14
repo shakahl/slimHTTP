@@ -348,6 +348,12 @@ class Imported():
 		self.instance = None
 
 	def __enter__(self, *args, **kwargs):
+		"""
+		It's important to know that it does cause a re-load of the module.
+		So any persistant stuff **needs** to be stowewd away.
+
+		Session files *(`pickle.dump()`)* is a good option, or god forbig `__builtin__['storage'] ...` is an option for in-memory stuff.
+		"""
 		try:
 			self.instance = self.spec.loader.exec_module(self.imported)
 		except Exception as e:
