@@ -1,7 +1,0 @@
-slimhttpd.HTTP_SERVER
-=====================
-
-.. autoclass:: slimhttpd.HTTP_SERVER
-   :show-inheritance:
-   :members:
-   :undoc-members:

@@ -4,36 +4,41 @@ Installation
 .. note:: These instructions apply to slimHTTP |version|.
 
 slimHTTP is a pure python library, so no special steps are required for
-installation. You can install it in a variety of ways, or simply copy the
-`slimHTTP` folder directly into your project.
+installation. You can install it in a variety of ways described below though for your convenience.
 
-You can clone the repository using **git**:
+Using `pip`
+-----------
+
+.. code-block:: sh
+
+    pip install slimHTTP
+
+Clone using `git`
+-----------------
 
 .. code-block:: sh
 
     git clone https://github.com/Torxed/slimHTTP.git
 
+But most likely you'll want to `submodule <https://git-scm.com/book/en/v2/Git-Tools-Submodules>`_ this in a project.
+To do that, I would recommend not following master as it's actively developed.
+Any release/tag should be good enough for production.
 
-**To enable WebSockets**, you'll need to firstly handle `Connection: Upgrade` request headers and then supply a appropriate upgrade module. More on this in `Enabling WebSockets <programming_guide/enabling_websockets>`_.
+.. code-block:: sh
 
+    cd project/dependencies
+    git submodule add -b v1.0 https://github.com/Torxed/slimHTTP.git
 
-Running the examples
---------------------
+Which would follow the stable release branch of `v1.0` where tests *should* be done before release.
 
-The source code archives include examples. Archives are
+Manually unpacking source
+-------------------------
+
+The source code archives *(including git)* include examples. Archives are
 `available on Github <https://github.com/Torxed/slimHTTP/releases/>`_:
 
 .. code-block:: sh
 
     unzip slimHTTP-x.x.x.zip
     cd slimHTTP-x.x.x
-    python examples/http_server.py
-
-
-As mentioned above, you can also clone the repository using Git:
-
-.. code-block:: sh
-
-    git clone https://github.com/Torxed/slimHTTP.git
-    cd slimHTTP
     python examples/http_server.py
