@@ -181,6 +181,13 @@ def get_file(request, ignore_read=False):
 	return 404, '404.html', -1, b'<html><head><title>404 - Not found</title></head><body>404 - Not found</body></html>'
 
 class CertManager():
+	"""
+	CertManager() is a class to handle creation of certificates.
+	It attempts to use the *optional* PyOpenSSL library, if that fails,
+	the backup option is to attempt a subprocess.Popen() call to openssl.
+
+	Warning: WIP!
+	"""
 	def generate_key_and_cert(key_file, **kwargs):
 		# TODO: Fallback is to use subprocess.Popen('openssl ....')
 		#       since installing additional libraries isn't always possible.
@@ -191,9 +198,6 @@ class CertManager():
 		except:
 			return None
 
-		"""
-		Will join key and cert in the same .pem file if no cert_file is given.
-		"""
 		# https://gist.github.com/kyledrake/d7457a46a03d7408da31
 		# https://github.com/cea-hpc/pcocc/blob/master/lib/pcocc/Tbon.py
 		# https://www.pyopenssl.org/en/stable/api/crypto.html
@@ -274,6 +278,9 @@ class CertManager():
 class slimHTTP_Error(BaseException):
 	pass
 
+class ModuleError(BaseException):
+	pass
+
 class ConfError(BaseException):
 	def __init__(self, message):
 		print(f'[Warn] {message}')
@@ -341,6 +348,7 @@ class Imported():
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
 			self.server.log(f'Gracefully handled module error in {self.path}: {e}')
 			self.server.log(traceback.format_exc())
+			raise ModuleError(traceback.format_exc())
 		return self
 
 	def __exit__(self, *args, **kwargs):
@@ -943,7 +951,13 @@ class HTTP_CLIENT_IDENTITY():
 		return self.socket.send(data)
 
 	def build_request(self):
-		yield (Events.CLIENT_REQUEST, HTTP_REQUEST(self))
+		try:
+			yield (Events.CLIENT_REQUEST, HTTP_REQUEST(self))
+		except Exception as e:
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			self.server.log(f'Fatal error in HTTP_REQUEST from {self}, {fname}@{exc_tb.tb_lineno}: {e}')
+			self.server.log(traceback.format_exc())
 
 	def has_data(self):
 		if self.closing: return False
@@ -1083,14 +1097,17 @@ class HTTP_REQUEST():
 						virtual.sys.modules[absolute_path] = Imported(self.CLIENT_IDENTITY.server, absolute_path, import_id, spec, imported)
 						sys.modules[import_id+'.py'] = imported
 
-					with virtual.sys.modules[absolute_path] as module:
-						# We have to re-check the @.route definition after the import, since it *might* have changed
-						# due to imports being allowed to do @.route('/', vhost=this)
-						if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
-							yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
+					try:
+						with virtual.sys.modules[absolute_path] as module:
+							# We have to re-check the @.route definition after the import, since it *might* have changed
+							# due to imports being allowed to do @.route('/', vhost=this)
+							if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
 
-						elif hasattr(module.imported, 'on_request'):
-							yield (Events.CLIENT_RESPONSE_DATA, module.imported.on_request(self))
+							elif hasattr(module.imported, 'on_request'):
+								yield (Events.CLIENT_RESPONSE_DATA, module.imported.on_request(self))
+					except ModuleError:
+						self.CLIENT_IDENTITY.close()
 					return
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
