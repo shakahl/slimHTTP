@@ -17,14 +17,14 @@ except:
 		def add_cert(self, *args, **kwargs):
 			pass
 	class SSL():
+		"""
+		This is *not* a crypto implementation!
+		This is a mock function to get ssl lib to behave like PyOpenSSL.SSL
+		"""
 		TLSv1_2_METHOD = 0b110
 		VERIFY_PEER = 0b1
 		VERIFY_FAIL_IF_NO_PEER_CERT = 0b10
 		MODE_RELEASE_BUFFERS = 0b10000
-		"""
-		This is *not* a crypto implementation!
-		This is a mock function to get certain functionality working.
-		"""
 		def __init__(self):
 			self.key = None
 			self.cert = None
@@ -57,13 +57,13 @@ from socket import *
 try:
 	from select import epoll, EPOLLIN
 except:
-	""" #!if windows
-	Create a epoll() implementation that simulates the epoll() behavior.
-	This so that the rest of the code doesn't need to worry weither or not epoll() exists.
-	"""
 	import select
 	EPOLLIN = None
 	class epoll():
+		""" #!if windows
+		Create a epoll() implementation that simulates the epoll() behavior.
+		This so that the rest of the code doesn't need to worry weither we're using select() or epoll().
+		"""
 		def __init__(self):
 			self.sockets = {}
 			self.monitoring = {}
@@ -86,9 +86,9 @@ except:
 HTTP = 0b0001
 HTTPS = 0b0010
 instances = {}
-def host(mode=HTTPS, *args, **kwargs):
+def server(mode=HTTPS, *args, **kwargs):
 	"""
-	host() is essentially just a router.
+	server() is essentially just a router.
 	It creates a instance of a selected mode (either `HTTP_SERVER` or `HTTPS_SERVER`).
 	It also saves the instance in a shared instance variable for access later.
 	"""
@@ -100,10 +100,22 @@ def host(mode=HTTPS, *args, **kwargs):
 		instances[f'{instance.config["addr"]}:{instance.config["port"]}'] = instance
 	return instance
 
+def host(*args, **kwargs):
+	"""
+	Legacy function, re-routes to server()
+	"""
+	print('[Warn] Deprecated function host() called, use server(mode=<mode>) instead.')
+	return server(*args, **kwargs)
+
 def drop_privileges():
+	#TODO: implement
 	return True
 
 def uniqueue_id(seed_len=24):
+	"""
+	Generates a unique identifier in 2020.
+	TODO: Add a time as well, so we don't repeat the same 24 characters by accident.
+	"""
 	return sha512(os.urandom(seed_len)).hexdigest()
 
 imported_paths = {}
@@ -668,7 +680,6 @@ class HTTP_SERVER():
 	def on_close_func(self, CLIENT_IDENTITY, *args, **kwargs):
 		self.pollobj.unregister(CLIENT_IDENTITY.fileno)
 		CLIENT_IDENTITY.socket.close()
-		print('Closing:', CLIENT_IDENTITY.fileno)
 		del(self.sockets[CLIENT_IDENTITY.fileno])
 
 	# @route
@@ -798,6 +809,11 @@ class HTTPS_SERVER(HTTP_SERVER):
 		self.default_port = 443
 		if not 'port' in kwargs: kwargs['port'] = self.default_port
 		HTTP_SERVER.__init__(self, *args, **kwargs)
+
+	def run(self):
+		while 1:
+			for event, *event_data in self.poll():
+				pass
 
 	def check_config(self, conf):
 		if not os.path.isfile(conf['ssl']['cert']):
