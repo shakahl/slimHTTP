@@ -1,16 +1,16 @@
 import ssl, os, sys, random, json, glob
 import ipaddress
-import importlib.util
+import importlib.util, traceback
 from os.path import isfile, abspath
-from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
-#								   requires us to decode the string before guessing type.
+from hashlib import sha512
 from json import dumps
 from time import time, sleep
+from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
+								 # requires us to decode the string before guessing type.
 try:
 	from OpenSSL.crypto import load_certificate, SSL, crypto, load_privatekey, PKey, FILETYPE_PEM, TYPE_RSA, X509, X509Req, dump_certificate, dump_privatekey
 	from OpenSSL._util import ffi as _ffi, lib as _lib
 except:
-	print('[Info] Could not load external lib OpenSSL, falling back to ssl')
 	class MOCK_CERT_STORE():
 		def __init__(self):
 			pass
@@ -85,18 +85,26 @@ except:
 
 HTTP = 0b0001
 HTTPS = 0b0010
+instances = {}
 def host(mode=HTTPS, *args, **kwargs):
 	"""
 	host() is essentially just a router.
-	It routes a selected mode and sets up an instance of either HTTP_SERVER or HTTPS_SERVER.
+	It creates a instance of a selected mode (either `HTTP_SERVER` or `HTTPS_SERVER`).
+	It also saves the instance in a shared instance variable for access later.
 	"""
 	if mode == HTTPS:
-		return HTTPS_SERVER(*args, **kwargs)
+		instance = HTTPS_SERVER(*args, **kwargs)
+		instances[f'{instance.config["addr"]}:{instance.config["port"]}'] = instance
 	elif mode == HTTP:
-		return HTTP_SERVER(*args, **kwargs)
+		instance = HTTP_SERVER(*args, **kwargs)
+		instances[f'{instance.config["addr"]}:{instance.config["port"]}'] = instance
+	return instance
 
 def drop_privileges():
 	return True
+
+def uniqueue_id(seed_len=24):
+	return sha512(os.urandom(seed_len)).hexdigest()
 
 imported_paths = {}
 def handle_py_request(request):
@@ -297,6 +305,37 @@ class Events():
 		def_map = {v: k for k, v in Events.__dict__.items() if not k.startswith('__') and k != 'convert'}
 		return def_map[_int] if _int in def_map else None
 
+class _Sys():
+	modules = {}
+class VirtualStorage():
+	def __init__(self):
+		self.sys = _Sys()
+virtual = VirtualStorage()
+
+class Imported():
+	def __init__(self, server, path, import_id, spec, imported):
+		self.server = server
+		self.path = path
+		self.import_id = import_id # For lookups in virtual.sys.modules
+		self.spec = spec
+		self.imported = imported
+		self.instance = None
+
+	def __enter__(self, *args, **kwargs):
+		try:
+			self.instance = self.spec.loader.exec_module(self.imported)
+		except Exception as e:
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+			self.server.log(f'Gracefully handled module error in {self.path}: {e}')
+			self.server.log(traceback.format_exc())
+		return self
+
+	def __exit__(self, *args, **kwargs):
+		# TODO: https://stackoverflow.com/questions/28157929/how-to-safely-handle-an-exception-inside-a-context-manager
+		if len(args) >= 2 and args[1]:
+			raise args[1]
+
 class ROUTE_HANDLER():
 	"""
 	Stub function that will act as a gateway between
@@ -408,7 +447,9 @@ class HTTP_SERVER():
 		self.methods = {
 			b'GET' : self.GET_func
 		}
-		self.routes = {}
+		self.routes = {
+			None : {} # Default vhost routes
+		}
 
 		# while drop_privileges() is None:
 		# 	log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
@@ -443,6 +484,13 @@ class HTTP_SERVER():
 		if not 'addr' in conf: conf['addr'] = ''
 		if 'vhosts' in conf:
 			for host in conf['vhosts']:
+				if 'proxy' in conf['vhosts'][host]:
+					if not ':' in conf['vhosts'][host]['proxy']: return ConfError(f'Missing port number in proxy definition for vhost {host}: "{conf["vhosts"][host]["proxy"]}"')
+					continue
+				if 'module' in conf['vhosts'][host]:
+					if not os.path.isfile(conf['vhosts'][host]['module']): return ConfError(f"Missing module for vhost {host}: {os.path.abspath(conf['vhosts'][host]['module'])}")
+					if not os.path.splitext(conf['vhosts'][host]['module'])[1] == '.py': return ConfError(f"vhost {host}'s module is not a python module: {conf['vhosts'][host]['module']}")
+					continue
 				if not 'web_root' in conf['vhosts'][host]: return ConfError(f'Missing "web_root" in vhost {host}\'s configuration.')
 				if not 'index' in conf['vhosts'][host]: return ConfError(f'Missing "index" in vhost {host}\'s configuration.')
 		return True
@@ -620,9 +668,11 @@ class HTTP_SERVER():
 	def on_close_func(self, CLIENT_IDENTITY, *args, **kwargs):
 		self.pollobj.unregister(CLIENT_IDENTITY.fileno)
 		CLIENT_IDENTITY.socket.close()
+		print('Closing:', CLIENT_IDENTITY.fileno)
 		del(self.sockets[CLIENT_IDENTITY.fileno])
 
-	def route(self, url, *args, **kwargs):
+	# @route
+	def route(self, url, vhost=None, *args, **kwargs):
 		"""
 		A decorator for statically define HTTP request path's::
 
@@ -642,8 +692,10 @@ class HTTP_SERVER():
 		:return: `tuple(Events.<type>, EVENT_DATA)`
 		:rtype: iterator
 		"""
-		self.routes[url] = ROUTE_HANDLER(url)
-		return self.routes[url].gateway
+		if not vhost in self.routes: self.routes[vhost] = {}
+
+		self.routes[vhost][url] = ROUTE_HANDLER(url)
+		return self.routes[vhost][url].gateway
 
 	def process_new_client(self, socket, address):
 		return socket, address
@@ -729,13 +781,17 @@ class HTTP_SERVER():
 					yield (response_event, client_response_data)
 
 					if response_event in (Events.CLIENT_RESPONSE_DATA, Events.CLIENT_URL_ROUTED) and client_response_data:
-						if type(client_response_data[0]) is bytes:
-							self.sockets[fileno].send(client_response_data[0])
-						elif type(client_response_data[0]) is HTTP_RESPONSE:
-							self.sockets[fileno].send(client_response_data[0].build())
+						if fileno in self.sockets:
+							if type(client_response_data[0]) is bytes:
+								self.sockets[fileno].send(client_response_data[0])
+							elif type(client_response_data[0]) is HTTP_RESPONSE:
+								self.sockets[fileno].send(client_response_data[0].build())
+						else:
+							break # The client has already recieved data, and was not setup for continius connections. so Keep-Alive has kicked in.
 
-					if not self.sockets[fileno].keep_alive:
-						self.sockets[fileno].close()
+					if fileno in self.sockets:
+						if not self.sockets[fileno].keep_alive:
+							self.sockets[fileno].close()
 
 class HTTPS_SERVER(HTTP_SERVER):
 	def __init__(self, *args, **kwargs):
@@ -974,23 +1030,11 @@ class HTTP_REQUEST():
 				else:
 					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST without Content-Length isn\'t supported yet.'))
 
-
 			_config = self.CLIENT_IDENTITY.server.config
 			if b'host' in self.headers and 'vhosts' in _config and self.headers[b'host'].decode('UTF-8') in _config['vhosts']:
 				self.vhost = self.headers[b'host'].decode('UTF-8')
 				if 'web_root' in _config['vhosts'][self.vhost]:
 					self.web_root = _config['vhosts'][self.vhost]['web_root']
-
-			# If the request *ends* on a /
-			# replace it with the index file from either vhosts or default to anything if vhosts non existing.
-			if self.headers[b'URL'][-1] == '/':
-				vhost_specific_index = False
-				if self.vhost and 'index' in _config['vhosts'][self.vhost]:
-					index_files = _config['vhosts'][self.vhost]['index']
-					if (_ := self.locate_index_file(index_files, return_any=False)):
-						self.headers[b'URL'] += _
-			if self.headers[b'URL'][-1] == '/':
-				self.headers[b'URL'] += self.locate_index_file(_config['index'], return_any=True)
 
 			# Find suitable upgrades if any
 			if {b'upgrade', b'connection'}.issubset(set(self.headers)) and b'upgrade' in self.headers[b'connection'].lower():
@@ -1004,16 +1048,47 @@ class HTTP_REQUEST():
 					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
 					return
 
-				#self.client.server.log('{} wants to upgrade with {}'.format(self.client, self.headers[b'upgrade']), level=5, origin='slimHTTP', function='parse')
-				#upgraded = self.client.server.upgrades[self.headers[b'upgrade'].lower()].upgrade(self.client, self.headers, self.payload, self.on_close)
-				#if upgraded:
-				#	self.client.server.log('Client has been upgraded!', level=5, origin='slimHTTP', function='parse')
-				#	self.client.server.sockets[self.client.socket.fileno()] = upgraded
+			# Check for @app.route definitions (self.routes in the server object).
+			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
 
-			elif self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes:
-				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.headers[b'URL']].parser(self))
+			# Check vhost specifics:
+			if self.vhost:
+				if 'proxy' in _config['vhosts'][self.vhost]:
+					pass
+				elif 'module' in _config['vhosts'][self.vhost]:
+					absolute_path = os.path.abspath(_config['vhosts'][self.vhost]['module'])
+					
+					if not absolute_path in virtual.sys.modules:
+						spec = importlib.util.spec_from_file_location(absolute_path, absolute_path)
+						imported = importlib.util.module_from_spec(spec)
+						
+						import_id = uniqueue_id()
+						virtual.sys.modules[absolute_path] = Imported(self.CLIENT_IDENTITY.server, absolute_path, import_id, spec, imported)
+						sys.modules[import_id+'.py'] = imported
 
+					with virtual.sys.modules[absolute_path] as module:
+						# We have to re-check the @.route definition after the import, since it *might* have changed
+						# due to imports being allowed to do @.route('/', vhost=this)
+						if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+							yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
+
+						elif hasattr(module.imported, 'on_request'):
+							yield (Events.CLIENT_RESPONSE_DATA, module.imported.on_request(self))
+					return
+
+			# Lastly, handle the request as one of the builtins (POST, GET)
 			elif (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
+				# If the request *ends* on a /
+				# replace it with the index file from either vhosts or default to anything if vhosts non existing.
+				if self.headers[b'URL'][-1] == '/':
+					if self.vhost and 'index' in _config['vhosts'][self.vhost]:
+						index_files = _config['vhosts'][self.vhost]['index']
+						if (_ := self.locate_index_file(index_files, return_any=False)):
+							self.headers[b'URL'] += _
+				if self.headers[b'URL'][-1] == '/':
+					self.headers[b'URL'] += self.locate_index_file(_config['index'], return_any=True)
+
 				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
 				if type(response) == dict: response = json.dumps(response)
 				if type(response) == str: response = bytes(response, 'UTF-8')
