@@ -332,6 +332,13 @@ class VirtualStorage():
 virtual = VirtualStorage()
 
 class Imported():
+	"""
+	A wrapper around absolute-path-imported via string modules.
+	Supports context wrapping to catch errors.
+
+	Will partially reload *most* of the code in the module in runtime.
+	Certain things won't get reloaded fully (this is a slippery dark slope)
+	"""
 	def __init__(self, server, path, import_id, spec, imported):
 		self.server = server
 		self.path = path
