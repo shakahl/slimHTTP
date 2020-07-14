@@ -275,8 +275,6 @@ class CertManager():
 
 		return priv_key, certificate
 
-# Some base exceptions with a name twist,
-# this so that we can distinguish some events.
 class slimHTTP_Error(BaseException):
 	pass
 
