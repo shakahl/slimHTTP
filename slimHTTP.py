@@ -311,6 +311,7 @@ class Events():
 	CLIENT_UPGRADE_ISSUE = 0b01000100
 	CLIENT_URL_ROUTED = 0b01000101
 	CLIENT_DATA_FRAGMENTED = 0b01000110
+	CLIENT_RESPONSE_PROXY_DATA = 0b01000111
 
 	WS_CLIENT_DATA = 0b11000000
 	WS_CLIENT_REQUEST = 0b11000001
@@ -319,6 +320,8 @@ class Events():
 	WS_CLIENT_ROUTED = 0b11000100
 
 	NOT_YET_IMPLEMENTED = 0b00000000
+
+	DATA_EVENTS = (CLIENT_RESPONSE_DATA, CLIENT_URL_ROUTED, CLIENT_RESPONSE_PROXY_DATA)
 
 	def convert(_int):
 		def_map = {v: k for k, v in Events.__dict__.items() if not k.startswith('__') and k != 'convert'}
@@ -503,10 +506,18 @@ class HTTP_SERVER():
 		"""
 		print('[LOG] '.join([str(x) for x in args]))
 
+		# TODO: Dump raw requests/logs to a .pcap:  (Optional, if scapy is precent)
+		# 
+		# from scapy.all import wrpcap, Ether, IP, UDP
+		# packet = Ether() / IP(dst="1.2.3.4") / UDP(dport=123)
+		# wrpcap('foo.pcap', [packet])
+
 	def check_config(self, conf):
 		"""
 		Makes sure that the given configuration *(either upon startup via `**kwargs` or
 		during annotation override of configuration (`@http.configuration`))* is correct.
+
+		#TODO: Verify that 'proxy' mode endpoints aren't ourself, because that **will** hand slimHTTP. (https://github.com/Torxed/slimHTTP/issues/11)
 
 		:param conf: Dictionary representing a valid configuration. #TODO: Add a doc on documentation :P
 		:type conf: dict
@@ -725,7 +736,7 @@ class HTTP_SERVER():
 		.. note:: The above example will handle both GET and POST (any user-defined method actually)
 
 		.. warning:: If routes end with a `/`, they will be appended by `/[index]` and treated as a normal folder.
-				     This means that static routes ending on `/` should be defined as `@app.route('/example/index.html')` rather than `@app.route('/example/')`.
+					 This means that static routes ending on `/` should be defined as `@app.route('/example/index.html')` rather than `@app.route('/example/')`.
 
 		:param timeout: is in seconds
 		:type timeout: integer
@@ -822,7 +833,7 @@ class HTTP_SERVER():
 				for response_event, *client_response_data in client_parsed_data[0].parse():
 					yield (response_event, client_response_data)
 
-					if response_event in (Events.CLIENT_RESPONSE_DATA, Events.CLIENT_URL_ROUTED) and client_response_data:
+					if response_event in Events.DATA_EVENTS and client_response_data:
 						if fileno in self.sockets:
 							if type(client_response_data[0]) is bytes:
 								self.sockets[fileno].send(client_response_data[0])
@@ -989,6 +1000,52 @@ class HTTP_CLIENT_IDENTITY():
 	def __repr__(self):
 		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port}>'
 
+class HTTP_PROXY_REQUEST():
+	"""
+	Turns a HTTP Request into a Reverse Proxy request,
+	based on :class:`~slimHTTP.HTTP_REQUEST` identifying the requested host
+	to be a vhost with the appropriate `vhost` configuration for a reverse proxy.
+	"""
+	def __init__(self, CLIENT_IDENTITY, ORIGINAL_REQUEST):
+		self.CLIENT_IDENTITY = CLIENT_IDENTITY
+		self.ORIGINAL_REQUEST = ORIGINAL_REQUEST
+		self.config = self.CLIENT_IDENTITY.server.config
+		self.vhost = self.ORIGINAL_REQUEST.vhost
+
+	def __repr__(self, *args, **kwargs):
+		return f"<HTTP_PROXY_REQUEST client={self.CLIENT_IDENTITY} vhost={self.vhost}, proxy={self.config['vhosts'][self.vhost]['proxy']}>"
+
+	def parse(self):
+		poller = epoll()
+		sock = socket()
+		sock.settimeout(0.2)
+		proxy, proxy_port = self.config['vhosts'][self.vhost]['proxy'].split(':',1)
+		try:
+			sock.connect((proxy, int(proxy_port)))
+		except:
+			# We timed out, or the proxy was to slow to respond.
+			self.CLIENT_IDENTITY.server.log(f'{self} was to slow to connect/respond. Aborting proxy and sending back empty response to requester.')
+			return None
+		sock.settimeout(None)
+		if 'ssl' in self.config['vhosts'][self.vhost] and self.config['vhosts'][self.vhost]['ssl']:
+			context = ssl.create_default_context()
+			sock = context.wrap_socket(sock, server_hostname=proxy)
+		poller.register(sock.fileno(), EPOLLIN)
+		sock.send(self.CLIENT_IDENTITY.buffer)
+		self.CLIENT_IDENTITY.server.log(f'Request sent for: {self}')
+
+		data_buffer = b''
+		# TODO: this will lock the entire application,
+		#       some how we'll have to improve this.
+		#       But for small scale stuff this will do, at least for testing.
+		while poller.poll(0.2):
+			tmp = sock.recv(8192)
+			if len(tmp) <= 0: break
+			data_buffer += tmp
+		poller.unregister(sock.fileno())
+		sock.close()
+		return data_buffer
+
 class HTTP_REQUEST():
 	"""
 	General request formatter passed as an object throughout the event stack.
@@ -1068,6 +1125,7 @@ class HTTP_REQUEST():
 		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
+			self.CLIENT_IDENTITY.server.log(f'Request being parsed: {header[:2048]} ({remainder[:2048]})')
 			self.payload = b''
 
 			self.build_request_headers(header)
@@ -1108,7 +1166,8 @@ class HTTP_REQUEST():
 			# Check vhost specifics:
 			if self.vhost:
 				if 'proxy' in _config['vhosts'][self.vhost]:
-					pass
+					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
+					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
 				elif 'module' in _config['vhosts'][self.vhost]:
 					absolute_path = os.path.abspath(_config['vhosts'][self.vhost]['module'])
 					
