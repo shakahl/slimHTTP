@@ -192,7 +192,30 @@ on_request
 .. note::
     Note that the instance depends on the `addr` and `port` used, a *"listening on every interface on port 80"* would be `:80` in this case.
 
+.. _proxy:
+
 proxy
 -----
 
-*TBA*
+| Reverse proxy support can be enabled in any vhost.
+| The reverse proxy will kick in once a valid HTTP header with the `Host: <host>` head is defined.
+| Upon which slimHTTP will switch from a :class:`~slimHTTP.HTTP_REQUEST` to a :class:`~slimHTTP.HTTP_PROXY_REQUEST`.
+
+.. warning::
+    The :class:`~slimHTTP.HTTP_REQUEST` object has two pitfalls. One, if the proxy is slow to respond all concurrent HTTP requests to slimHTTP will become slow, since we're single threaded, it means that the proxy response has to be parsed in full before other requests can come in. The second pitfall being `Issue #11 <https://github.com/Torxed/slimHTTP/issues/11>`_.
+
+.. code-block:: py
+
+    {
+        'vhosts' : {
+            'internal.hvornum.se' : {
+                'proxy' : '192.168.10.10:80',
+                'ssl' : False
+            }
+        }
+    }
+
+| Here, `http://internal.hvornum.se` requests are proxied down to `192.168.10.10` on port `80`.
+
+.. note::
+    The `'ssl' : False'` is optional and the default behavior.

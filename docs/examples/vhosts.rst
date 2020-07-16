@@ -38,7 +38,30 @@ This will deliver anything under `./vhosts/hvornum.se` and jail all requests to 
 reverse proxy mode
 ------------------
 
-*TBD*
+| To configure a reverse proxy, the proxy definitions **must** consist of two things,
+| an `addr` and a `port` in the format: `"addr:port"`.
+| A simple example would be:
+
+.. code-block:: py
+
+    import slimHTTP
+    
+    http = slimHTTP.server(slimHTTP.HTTP)
+    
+    @http.configuration
+    def config(instance):
+        return {
+            'vhosts' : {
+                'internal.hvornum.se' : {
+                    'proxy' : '192.168.10.10:80'
+                }
+            }
+        }
+
+| Which will allow outside clients to connect to a internal resource on the `192.168.10.10` IP, via slimHTTP.
+
+.. note::
+    There's an optional flag to `proxy` definitions, which can be seen under :ref:`_modules`.
 
 module mode
 -----------
