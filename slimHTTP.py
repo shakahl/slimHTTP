@@ -94,10 +94,10 @@ def server(mode=HTTPS, *args, **kwargs):
 	"""
 	if mode == HTTPS:
 		instance = HTTPS_SERVER(*args, **kwargs)
-		instances[f'{instance.config["addr"]}:{instance.config["port"]}'] = instance
 	elif mode == HTTP:
 		instance = HTTP_SERVER(*args, **kwargs)
-		instances[f'{instance.config["addr"]}:{instance.config["port"]}'] = instance
+		
+	instances[f'{instance.config["addr"]}:{instance.config["port"]}'] = instance
 	return instance
 
 def host(*args, **kwargs):
@@ -275,6 +275,9 @@ class CertManager():
 
 		return priv_key, certificate
 
+class InvalidFrame(BaseException):
+	pass
+
 class slimHTTP_Error(BaseException):
 	pass
 
@@ -320,6 +323,7 @@ class Events():
 	WS_CLIENT_ROUTED = 0b11000100
 
 	NOT_YET_IMPLEMENTED = 0b00000000
+	INVALID_DATA = 0b00000001
 
 	DATA_EVENTS = (CLIENT_RESPONSE_DATA, CLIENT_URL_ROUTED, CLIENT_RESPONSE_PROXY_DATA)
 
@@ -735,9 +739,6 @@ class HTTP_SERVER():
 
 		.. note:: The above example will handle both GET and POST (any user-defined method actually)
 
-		.. warning:: If routes end with a `/`, they will be appended by `/[index]` and treated as a normal folder.
-					 This means that static routes ending on `/` should be defined as `@app.route('/example/index.html')` rather than `@app.route('/example/')`.
-
 		:param timeout: is in seconds
 		:type timeout: integer
 		:param fileno: Limits the return events to a specific socket/client fileno.
@@ -826,6 +827,7 @@ class HTTP_SERVER():
 							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
 
 	def do_the_dance(self, fileno):
+		self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
 		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
@@ -1062,19 +1064,25 @@ class HTTP_REQUEST():
 								404 : b'HTTP/1.1 404 Not Found\r\n',
 								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
 		self.response_headers = {}
-		self.CLIENT_IDENTITY.server.log(f'Building request/reponse for client: {CLIENT_IDENTITY}', level=5, source='HTTP_REQUEST')
 		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
+
+		print(self.CLIENT_IDENTITY.buffer)
 
 		#print(self.CLIENT_IDENTITY.buffer)
 
 	def build_request_headers(self, data):
 		## Parse the headers
-		METHOD, header = data.split(b'\r\n',1)
-		for item in header.split(b'\r\n'):
-			if b':' in item:
-				key, val = item.split(b':',1)
-				self.headers[key.strip().lower()] = val.strip()
+		if b'\r\n' in data:
+			METHOD, header = data.split(b'\r\n',1)
+			for item in header.split(b'\r\n'):
+				if b':' in item:
+					key, val = item.split(b':',1)
+					self.headers[key.strip().lower()] = val.strip()
+		else:
+			METHOD, self.headers = data, {}
 
+		if not b' ' in METHOD:
+			raise InvalidFrame(f"An invalid method was given: {METHOD[:100]}")
 		METHOD, URL, proto = METHOD.split(b' ', 2)
 		URI_QUERY = {}
 		if b'?' in URL:
@@ -1128,7 +1136,11 @@ class HTTP_REQUEST():
 			self.CLIENT_IDENTITY.server.log(f'Request being parsed: {header[:2048]} ({remainder[:2048]})')
 			self.payload = b''
 
-			self.build_request_headers(header)
+			try:
+				self.build_request_headers(header)
+			except InvalidFrame as e:
+				return (Events.INVALID_DATA, e)
+
 			if self.headers[b'METHOD'] == b'POST':
 				if b'content-length' in self.headers:
 					content_length = int(self.headers[b'content-length'].decode('UTF-8'))

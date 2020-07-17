@@ -198,7 +198,7 @@ proxy
 -----
 
 | Reverse proxy support can be enabled in any vhost.
-| The reverse proxy will kick in once a valid HTTP header with the `Host: <host>` head is defined.
+| The reverse proxy will kick in once a valid HTTP header with the `Host: <host>` field defined.
 | Upon which slimHTTP will switch from a :class:`~slimHTTP.HTTP_REQUEST` to a :class:`~slimHTTP.HTTP_PROXY_REQUEST`.
 
 .. warning::
