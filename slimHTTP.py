@@ -1,6 +1,7 @@
 import ssl, os, sys, random, json, glob
 import ipaddress
 import importlib.util, traceback
+from datetime import date, datetime
 from os.path import isfile, abspath
 from hashlib import sha512
 from json import dumps
@@ -179,6 +180,30 @@ def get_file(request, ignore_read=False):
 
 	request.CLIENT_IDENTITY.server.log(f'404 - Could\'t locate file {real_path}', level=3, source='get_file')
 	return 404, '404.html', -1, b'<html><head><title>404 - Not found</title></head><body>404 - Not found</body></html>'
+
+def json_serial(obj):
+	"""
+	A helper function to being able to `json.dumps()` most things.
+	Especially `bytes` data needs to be converted to a `str` object.
+
+	Use this with `default=json_serial` in `json.dumps(default=...)`.
+
+	:param obj: A dictionary object (not the `dict` itself)
+	:type obj: Any `dict` compatible `key` or `value`.
+
+	:return: `key` or `value` converted to a `JSON` friendly type.
+	:rtype: Any `JSON` compatible `key` or `value`.
+	"""
+	if isinstance(obj, (datetime, date)):
+		return obj.isoformat()
+	elif type(obj) is bytes:
+		return obj.decode('UTF-8')
+	elif getattr(obj, "__dump__", None): #hasattr(obj, '__dump__'):
+		return obj.__dump__()
+	else:
+		return str(obj)
+
+	raise TypeError('Type {} is not serializable: {}'.format(type(obj), obj))
 
 class CertManager():
 	"""
@@ -778,8 +803,8 @@ class HTTP_SERVER():
 		:return: `tuple(Events.<type>, EVENT_DATA)`
 		:rtype: iterator
 		"""
-		for left_over in self.sockets:
-			if self.sockets[left_over].has_data():
+		for left_over in list(self.sockets):
+			if if left_over in self.sockets and self.sockets[left_over].has_data():
 				yield self.do_the_dance(left_over)
 
 		for socket_fileno, event_type in self.pollobj.poll(timeout):
@@ -847,7 +872,7 @@ class HTTP_SERVER():
 							## But that would mean that HTTP_CLIENT_IDENTITY and WS_CLIENT_IDENTITY from slimWS would both
 							## require identical `.send()` endpoints.
 							if type(client_response_data[0]) is dict:
-								self.sockets[fileno].send(bytes(json.dumps(client_response_data[0]), 'UTF-8'))
+								self.sockets[fileno].send(bytes(json.dumps(client_response_data[0], default=json_serial), 'UTF-8'))
 							elif type(client_response_data[0]) is bytes:
 								self.sockets[fileno].send(client_response_data[0])
 							elif type(client_response_data[0]) is HTTP_RESPONSE:
