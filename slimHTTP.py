@@ -840,7 +840,15 @@ class HTTP_SERVER():
 					if response_event in Events.DATA_EVENTS and client_response_data:
 						if fileno in self.sockets:
 							## TODO: Dangerous to dump dictionary data without checking if the client is HTTP or WS identity?
-							if type(client_response_data[0]) is bytes:
+
+							## Temporary: Adding a dict inspector for data, since
+							## websockets support it and HTTP does as well if we convert it..
+							## In the futgure, each CLIENT_IDENTITY object should be responsible for converting the data.
+							## But that would mean that HTTP_CLIENT_IDENTITY and WS_CLIENT_IDENTITY from slimWS would both
+							## require identical `.send()` endpoints.
+							if type(client_response_data[0]) is dict:
+								self.sockets[fileno].send(bytes(json.dumps(client_response_data[0]), 'UTF-8'))
+							elif type(client_response_data[0]) is bytes:
 								self.sockets[fileno].send(client_response_data[0])
 							elif type(client_response_data[0]) is HTTP_RESPONSE:
 								self.sockets[fileno].send(client_response_data[0].build())
