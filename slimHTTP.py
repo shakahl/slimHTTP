@@ -827,7 +827,7 @@ class HTTP_SERVER():
 							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
 
 	def do_the_dance(self, fileno):
-		self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
+		#self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
 		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
@@ -1065,8 +1065,6 @@ class HTTP_REQUEST():
 								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
 		self.response_headers = {}
 		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
-
-		print(self.CLIENT_IDENTITY.buffer)
 
 		#print(self.CLIENT_IDENTITY.buffer)
 
