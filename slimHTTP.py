@@ -840,7 +840,7 @@ class HTTP_SERVER():
 					if response_event in Events.DATA_EVENTS and client_response_data:
 						if fileno in self.sockets:
 							## TODO: Dangerous to dump dictionary data without checking if the client is HTTP or WS identity?
-							elif type(client_response_data[0]) is bytes:
+							if type(client_response_data[0]) is bytes:
 								self.sockets[fileno].send(client_response_data[0])
 							elif type(client_response_data[0]) is HTTP_RESPONSE:
 								self.sockets[fileno].send(client_response_data[0].build())
