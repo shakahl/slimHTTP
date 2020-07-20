@@ -825,8 +825,8 @@ class HTTP_SERVER():
 					for client_event, *client_event_data in self.sockets[socket_fileno].poll(timeout, force_recieve=True):
 						yield (client_event, client_event_data) # Yield "we got data" event
 
-						if client_event == Events.CLIENT_DATA:
-							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
+						if client_event == Events.CLIENT_DATA: # Data = data that needs to be parsed
+							yield self.do_the_dance(socket_fileno)
 
 	def do_the_dance(self, fileno):
 		#self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
@@ -839,7 +839,8 @@ class HTTP_SERVER():
 
 					if response_event in Events.DATA_EVENTS and client_response_data:
 						if fileno in self.sockets:
-							if type(client_response_data[0]) is bytes:
+							## TODO: Dangerous to dump dictionary data without checking if the client is HTTP or WS identity?
+							elif type(client_response_data[0]) is bytes:
 								self.sockets[fileno].send(client_response_data[0])
 							elif type(client_response_data[0]) is HTTP_RESPONSE:
 								self.sockets[fileno].send(client_response_data[0].build())
