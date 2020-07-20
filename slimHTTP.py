@@ -1131,7 +1131,7 @@ class HTTP_REQUEST():
 		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
-			self.CLIENT_IDENTITY.server.log(f'Request being parsed: {header[:2048]} ({remainder[:2048]})')
+			#self.CLIENT_IDENTITY.server.log(f'Request being parsed: {header[:2048]} ({remainder[:2048]})')
 			self.payload = b''
 
 			try:
