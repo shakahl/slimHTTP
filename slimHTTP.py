@@ -1164,12 +1164,12 @@ class HTTP_REQUEST():
 				requested_upgrade_method = self.headers[b'upgrade'].lower()
 				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
 				if new_identity:
-					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}', level=5, source='HTTP_REQUEST.parse()')
+					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}')
 					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
 					yield (Events.CLIENT_UPGRADED, new_identity)
 				else:
 					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
-					return
+				return
 
 			# Check for @app.route definitions (self.routes in the server object).
 			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
