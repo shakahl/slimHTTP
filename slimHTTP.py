@@ -804,7 +804,7 @@ class HTTP_SERVER():
 		:rtype: iterator
 		"""
 		for left_over in list(self.sockets):
-			if if left_over in self.sockets and self.sockets[left_over].has_data():
+			if left_over in self.sockets and self.sockets[left_over].has_data():
 				yield self.do_the_dance(left_over)
 
 		for socket_fileno, event_type in self.pollobj.poll(timeout):
