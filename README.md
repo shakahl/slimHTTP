@@ -1,5 +1,5 @@
 # <img src="https://github.com/Torxed/slimHTTP/raw/master/docs/_static/slimHTTP.png" alt="drawing" width="200"/>
-A simple, minimal and flexible Python HTTP server.<br>
+A no-dependency, simple, minimal and flexible HTTP server written in Python.<br>
 Supports: REST, WebSocket¹, vhosts, reverse proxy and static file delivery.
 
  * slimHTTP [documentation](https://slimhttp.readthedocs.io/en/master)
@@ -7,6 +7,7 @@ Supports: REST, WebSocket¹, vhosts, reverse proxy and static file delivery.
 
 ## Features
 
+ * No dependencies or additional requirements
  * REST routes *(`@http.route('/some/endpoint')`)*
  * websockets using plugin [spiderWeb](https://github.com/Torxed/spiderWeb) ¹
  * Can emulate files via `@http.route('/example.html')`
