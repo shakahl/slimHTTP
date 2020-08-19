@@ -1,7 +1,6 @@
 import ssl, os, sys, random, json, glob
 import ipaddress
 import importlib.util, traceback
-from datetime import date, datetime
 from os.path import isfile, abspath
 from hashlib import sha512
 from json import dumps
@@ -84,6 +83,45 @@ except:
 			except OSError:
 				return []
 
+def splitall(path):
+	allparts = []
+	while 1:
+		parts = os.path.split(path)
+		if parts[0] == path:  # sentinel for absolute paths
+			allparts.insert(0, parts[0])
+			break
+		elif parts[1] == path: # sentinel for relative paths
+			allparts.insert(0, parts[1])
+			break
+		else:
+			path = parts[0]
+			allparts.insert(0, parts[1])
+	return allparts
+os.path.splitall = splitall
+
+def safepath(root, path):
+	root_abs = os.path.abspath(root)
+	path_abs = os.path.abspath(os.path.join(*os.path.splitall(path)[1:]))
+	cwd = os.getcwd()
+
+	# Check if the resolved requested path shares a common pathway with the current working directory.
+	# And if so, strip it away because the next os.path.join() will mess things up otherwise.
+	common_pathway = os.path.commonprefix([cwd, path_abs])
+	if common_pathway:
+		path_abs = path_abs[len(common_pathway):]
+
+		# If the new path doesn't start with / we'll have to add it
+		# otherwise the next splitall() will assume the wrong thing.
+		# And that assumption is important to not mess up other normal paths that will start with /
+		start_of_abs_path = os.path.splitall(path_abs)[0]
+		if start_of_abs_path[0] not in ('\\', '.', '/') and ':\\' not in start_of_abs_path:
+			path_abs = os.path.join('/', start_of_abs_path)
+
+	# Safely join the root and path (minus the leading / of path)
+	return os.path.join(root_abs, *os.path.splitall(path_abs)[1:])
+os.path.safepath = safepath
+
+MAX_MEM_ALLOC = 1024*50
 HTTP = 0b0001
 HTTPS = 0b0010
 instances = {}
@@ -147,63 +185,127 @@ def handle_py_request(request):
 			request.CLIENT_IDENTITY.server.log(f'Failed to reload requested file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
 	return old_version, imported_paths[f'{path}']
 
-def get_file(request, ignore_read=False):
-	"""
-	Read a local file.
-	"""
-	real_path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
-	request.CLIENT_IDENTITY.server.log(f'Opening local file "{real_path}"')
-	if b'range' in request.headers:
-		_, data_range = request.headers[b'range'].split(b'=',1)
-		start, stop = [int(x) for x in data_range.split(b'-')]
-		request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}')
-	else:
-		start, stop = None, None
-
-	extension = os.path.splitext(real_path)[1]
-
-	if isfile(real_path) and extension != '.py':
-		if ignore_read is False:
-			with open(real_path, 'rb') as fh:
-				if start:
-					fh.seek(start)
-				if stop:
-					data = fh.read(stop-start)
-				else:
-					data = fh.read()
-		else:
-			data = b''
+class FILE():
+	def __init__(self, request, path):
+		self.request = request
+		self._path = path
+		self.fh = None
 		
-		filesize = os.stat(real_path).st_size
-		request.CLIENT_IDENTITY.server.log(f'Returning file content: {len(data)} (actual size: {filesize})')
-		return 200, real_path, filesize, data
+		if os.path.isfile(self.path):
+			self.ret_code = 200
+			self.size = os.stat(self.path).st_size
+		else:
+			self.ret_code = 404
+			self.size = -1
 
-	request.CLIENT_IDENTITY.server.log(f'404 - Could\'t locate file {real_path}', level=3, source='get_file')
-	return 404, '404.html', -1, b'<html><head><title>404 - Not found</title></head><body>404 - Not found</body></html>'
+	def __enter__(self, *args, **kwargs):
+		if not self.fh: self.fh = open(self.path, 'rb')
 
-def json_serial(obj):
-	"""
-	A helper function to being able to `json.dumps()` most things.
-	Especially `bytes` data needs to be converted to a `str` object.
+		return self
 
-	Use this with `default=json_serial` in `json.dumps(default=...)`.
+	def __exit__(self, *args, **kwargs):
+		self.fh.close()
 
-	:param obj: A dictionary object (not the `dict` itself)
-	:type obj: Any `dict` compatible `key` or `value`.
+	@property
+	def mime(self):
+		mime = guess_type(self.path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
+		if not mime and self.path[-4:] == '.iso': mime = 'application/octet-stream'
+		return mime
 
-	:return: `key` or `value` converted to a `JSON` friendly type.
-	:rtype: Any `JSON` compatible `key` or `value`.
-	"""
-	if isinstance(obj, (datetime, date)):
-		return obj.isoformat()
-	elif type(obj) is bytes:
-		return obj.decode('UTF-8')
-	elif getattr(obj, "__dump__", None): #hasattr(obj, '__dump__'):
-		return obj.__dump__()
-	else:
-		return str(obj)
+	@property
+	def headers(self):
+		return {
+			b'Content-Type' : bytes(self.mime, 'UTF-8') if self.mime else b'plain/text',
+			b'Content-Length' : str(self.size)
+		}
 
-	raise TypeError('Type {} is not serializable: {}'.format(type(obj), obj))
+	@property
+	def path(self):
+		return os.path.abspath(self._path)
+
+	@property
+	def data(self, size=-1):
+		yield self.request.build_headers(self.headers) + self.fh.read(size)
+
+class STREAM_CHUNKED(FILE):
+	def __init__(self, request, path, start=0, chunksize=MAX_MEM_ALLOC):
+		super(STREAM_CHUNKED, self).__init__(request, path)
+		self.pos = start
+		self.chunksize = chunksize
+		# self.ret_code = 206
+		self.headers_sent = False
+
+	def __enter__(self, *args, **kwargs):
+		if not self.fh: self.fh = open(self.path, 'rb')
+
+		self.fh.seek(self.pos)
+		return self
+
+	def __exit__(self, *args, **kwargs):
+		if self.pos >= self.size:
+			self.fh.close()
+
+	@property
+	def headers(self):
+		return {
+			b'Content-Type' : bytes(self.mime, 'UTF-8') if self.mime else b'plain/text',
+			#b'Content-Length' : str(self.size),
+			b'Transfer-Encoding' : b'chunked'
+		}
+
+	@property
+	def data(self):
+		self.pos += self.chunksize # Safe to move forward before yielding due to __enter__
+		
+		while self.fh.tell() < self.size:
+			chunk = self.fh.read(self.chunksize)
+			if not self.headers_sent:
+				self.headers_sent = True
+				yield self.request.build_headers(self.headers) + bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
+			else:
+				yield bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
+
+		yield b'0\r\n\r\n'
+
+# def get_file(request, ignore_read=False):
+# 	"""
+# 	Read a local file.
+# 	"""
+# 	real_path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
+
+# 	request.CLIENT_IDENTITY.server.log(f'Opening local file "{real_path}"')
+
+# 	extension = os.path.splitext(real_path)[1]
+
+# 	if isfile(real_path) and extension != '.py':
+# 		if ignore_read is False:
+# 			start, stop = None, None
+# 			if b'range' in request.headers:
+# 				_, data_range = request.headers[b'range'].split(b'=',1)
+# 				start, stop = [int(x) for x in data_range.split(b'-')]
+# 				request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}')
+
+# 			elif os.stat(real_path).st_size >= MAX_MEM_ALLOC:
+# 				print('File size to large, forcing range.')
+# 				start = 0
+# 				stop = MAX_MEM_ALLOC
+
+# 			with open(real_path, 'rb') as fh:
+# 				if start:
+# 					fh.seek(start)
+# 				if stop:
+# 					data = fh.read(stop-start)
+# 				else:
+# 					data = fh.read()
+# 		else:
+# 			data = b''
+		
+# 		filesize = os.stat(real_path).st_size
+# 		request.CLIENT_IDENTITY.server.log(f'Returning file content: {len(data)} (actual size: {filesize})')
+# 		return 200, real_path, filesize, data
+
+# 	request.CLIENT_IDENTITY.server.log(f'404 - Could\'t locate file {real_path}', level=3, source='get_file')
+# 	return 404, '404.html', -1, b'<html><head><title>404 - Not found</title></head><body>404 - Not found</body></html>'
 
 class CertManager():
 	"""
@@ -345,14 +447,12 @@ class Events():
 	WS_CLIENT_REQUEST = 0b11000001
 	WS_CLIENT_COMPLETE_FRAME = 0b11000010
 	WS_CLIENT_INCOMPLETE_FRAME = 0b11000011
-	WS_CLIENT_ROUTING = 0b11000100
-	WS_CLIENT_ROUTED = 0b11000101
-	WS_CLIENT_RESPONSE = 0b11000110
+	WS_CLIENT_ROUTED = 0b11000100
 
 	NOT_YET_IMPLEMENTED = 0b00000000
 	INVALID_DATA = 0b00000001
 
-	DATA_EVENTS = (CLIENT_RESPONSE_DATA, CLIENT_URL_ROUTED, CLIENT_RESPONSE_PROXY_DATA, WS_CLIENT_RESPONSE)
+	DATA_EVENTS = (CLIENT_RESPONSE_DATA, CLIENT_URL_ROUTED, CLIENT_RESPONSE_PROXY_DATA)
 
 	def convert(_int):
 		def_map = {v: k for k, v in Events.__dict__.items() if not k.startswith('__') and k != 'convert'}
@@ -435,7 +535,7 @@ class HTTP_RESPONSE():
 								404 : b'HTTP/1.1 404 Not Found\r\n',
 								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
 
-	def build_headers(self):
+	def build_headers(self, additional_headers={}):
 		x = b''
 		if 'ret_code' in self.kwargs and self.kwargs['ret_code'] in self.ret_code_mapper:
 			x += self.ret_code_mapper[self.kwargs['ret_code']]
@@ -445,7 +545,7 @@ class HTTP_RESPONSE():
 		if not 'content-length' in [key.lower() for key in self.headers.keys()]:
 			self.headers['Content-Length'] = str(len(self.payload))
 
-		for key, val in self.headers.items():
+		for key, val in {**self.headers, **additional_headers}.items():
 			if type(key) != bytes: key = bytes(key, 'UTF-8')
 			if type(val) != bytes: val = bytes(val, 'UTF-8')
 			x += key + b': ' + val + b'\r\n'
@@ -646,7 +746,12 @@ class HTTP_SERVER():
 			request.headers[b'URL'] += request.locate_index_file(self.config['index'], return_any=True)
 
 		if request.headers[b'METHOD'] in self.methods:
-			return self.methods[request.headers[b'METHOD']](request)
+			response = self.methods[request.headers[b'METHOD']](request)
+
+			if type(response) == dict: response = json.dumps(response)
+			if type(response) == str: response = self.build_headers() + bytes(response, 'UTF-8')
+			if type(response) not in (FILE, STREAM_CHUNKED, bytes): response = self.build_headers() 
+			yield (Events.CLIENT_RESPONSE_DATA, response)
 
 	def local_file(self, request):
 		path = request.headers[b'URL']
@@ -680,31 +785,30 @@ class HTTP_SERVER():
 					request.response_headers[b'Content-Length'] = bytes(str(len(response)), 'UTF-8')
 				return response
 			else:
-				print(404)
 				request.ret_code = 404
 				data = None
+
+			return data
 		else:
-			data = get_file(request)
-			if data:
-				request.ret_code, path, length, data = data
-				mime = guess_type(path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
-				if not mime and path[-4:] == '.iso': mime = 'application/octet-stream'
-				if b'range' in request.headers:
-					_, data_range = request.headers[b'range'].split(b'=',1)
-					start, stop = [int(x) for x in data_range.split(b'-')]
-					request.response_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
-					request.ret_code = 206
-				else:
-					if mime == 'application/octet-stream':
-						request.response_headers[b'Accept-Ranges'] = b'bytes'
+		## We're dealing with a normal, non .py file.
+			# Join the web_root with the requested URL safely(?) passed through os.path.abspath() removing the initial / or C:\ part.
+			path = os.path.safepath(request.web_root, request.headers[b'URL'])
 
-				request.response_headers[b'Content-Type'] = bytes(mime, 'UTF-8') if mime else b'plain/text'
-				request.response_headers[b'Content-Length'] = bytes(str(len(data)), 'UTF-8')
-			else:
-				request.ret_code = 404
-				data = None
+			F_OBJ = FILE(request, path)
 
-		return data
+			if b'range' in request.headers:
+				_, data_range = request.headers[b'range'].split(b'=',1)
+				start, stop = [int(x) for x in data_range.split(b'-')]
+				request.response_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
+				F_OBJ = STREAM_CHUNKED(request, path, start, chunksize=end-stop)
+			elif F_OBJ.mime == 'application/octet-stream':
+				## TODO: Not tested
+				request.response_headers[b'Accept-Ranges'] = b'bytes'
+				F_OBJ = STREAM_CHUNKED(request, path)
+			elif F_OBJ.size >= MAX_MEM_ALLOC:
+				F_OBJ = STREAM_CHUNKED(request, path)
+
+			return F_OBJ
 
 	def allow(self, allow_list, *args, **kwargs):
 		staging_list = []
@@ -803,8 +907,8 @@ class HTTP_SERVER():
 		:return: `tuple(Events.<type>, EVENT_DATA)`
 		:rtype: iterator
 		"""
-		for left_over in list(self.sockets):
-			if left_over in self.sockets and self.sockets[left_over].has_data():
+		for left_over in self.sockets:
+			if self.sockets[left_over].has_data():
 				yield self.do_the_dance(left_over)
 
 		for socket_fileno, event_type in self.pollobj.poll(timeout):
@@ -850,11 +954,11 @@ class HTTP_SERVER():
 					for client_event, *client_event_data in self.sockets[socket_fileno].poll(timeout, force_recieve=True):
 						yield (client_event, client_event_data) # Yield "we got data" event
 
-						if client_event == Events.CLIENT_DATA: # Data = data that needs to be parsed
-							yield self.do_the_dance(socket_fileno)
+						if client_event == Events.CLIENT_DATA:
+							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
 
 	def do_the_dance(self, fileno):
-		#self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
+		self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
 		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
@@ -864,29 +968,21 @@ class HTTP_SERVER():
 
 					if response_event in Events.DATA_EVENTS and client_response_data:
 						if fileno in self.sockets:
-							## TODO: Dangerous to dump dictionary data without checking if the client is HTTP or WS identity?
-
-							## Temporary: Adding a dict inspector for data, since
-							## websockets support it and HTTP does as well if we convert it..
-							## In the futgure, each CLIENT_IDENTITY object should be responsible for converting the data.
-							## But that would mean that HTTP_CLIENT_IDENTITY and WS_CLIENT_IDENTITY from slimWS would both
-							## require identical `.send()` endpoints.
-							if type(client_response_data[0]) is dict:
-								self.sockets[fileno].send(bytes(json.dumps(client_response_data[0], default=json_serial), 'UTF-8'))
-							elif type(client_response_data[0]) is bytes:
+							if type(client_response_data[0]) is bytes:
 								self.sockets[fileno].send(client_response_data[0])
 							elif type(client_response_data[0]) is HTTP_RESPONSE:
 								self.sockets[fileno].send(client_response_data[0].build())
+							elif type(client_response_data[0]) in (FILE, STREAM_CHUNKED):
+								with client_response_data[0] as handle:
+									for data in handle.data:
+										#print('Sending:', len(data), [data[:40], data[-40:]])
+										self.sockets[fileno].send(data)
 						else:
 							break # The client has already recieved data, and was not setup for continius connections. so Keep-Alive has kicked in.
 
 					if fileno in self.sockets:
 						if not self.sockets[fileno].keep_alive:
 							self.sockets[fileno].close()
-	def run(self):
-		while 1:
-			for event, *event_data in self.poll():
-				pass
 
 class HTTPS_SERVER(HTTP_SERVER):
 	def __init__(self, *args, **kwargs):
@@ -894,6 +990,10 @@ class HTTPS_SERVER(HTTP_SERVER):
 		if not 'port' in kwargs: kwargs['port'] = self.default_port
 		HTTP_SERVER.__init__(self, *args, **kwargs)
 
+	def run(self):
+		while 1:
+			for event, *event_data in self.poll():
+				pass
 
 	def check_config(self, conf):
 		if not os.path.isfile(conf['ssl']['cert']):
@@ -1102,7 +1202,14 @@ class HTTP_REQUEST():
 		self.response_headers = {}
 		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
 
-		#print(self.CLIENT_IDENTITY.buffer)
+		print(self.CLIENT_IDENTITY.buffer)
+
+	@property
+	def data(self):
+		if b'content-type' in self.headers:
+			if self.headers[b'content-type'] == b'application/json':
+				return json.loads(self.payload.decode('UTF-8'))
+		return self.payload
 
 	def build_request_headers(self, data):
 		## Parse the headers
@@ -1147,14 +1254,14 @@ class HTTP_REQUEST():
 			if return_any:
 				return file
 
-	def build_headers(self):
+	def build_headers(self, additional_headers={}):
 		x = b''
 		if self.ret_code in self.ret_code_mapper:
 			x += self.ret_code_mapper[self.ret_code]# + self.build_headers() + (response if response else b'')
 		else:
 			return b'HTTP/1.1 500 Internal Server Error\r\n\r\n'
 
-		for key, val in self.response_headers.items():
+		for key, val in {**self.response_headers, **additional_headers}.items():
 			if type(key) != bytes: key = bytes(key, 'UTF-8')
 			if type(val) != bytes: val = bytes(val, 'UTF-8')
 			x += key + b': ' + val + b'\r\n'
@@ -1167,7 +1274,7 @@ class HTTP_REQUEST():
 		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
-			#self.CLIENT_IDENTITY.server.log(f'Request being parsed: {header[:2048]} ({remainder[:2048]})')
+			self.CLIENT_IDENTITY.server.log(f'Request from {self.CLIENT_IDENTITY} being parsed: {header[:2048]} ({remainder[:2048]})')
 			self.payload = b''
 
 			try:
@@ -1203,7 +1310,7 @@ class HTTP_REQUEST():
 					yield (Events.CLIENT_UPGRADED, new_identity)
 				else:
 					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
-				return
+					return
 
 			# Check for @app.route definitions (self.routes in the server object).
 			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
@@ -1238,11 +1345,10 @@ class HTTP_REQUEST():
 						self.CLIENT_IDENTITY.close()
 					return
 
+			print('Handling via:', self.CLIENT_IDENTITY.server.REQUESTED_METHOD)
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
-				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"', level=5, source='HTTP_REQUEST.parse()')
-				if type(response) == dict: response = json.dumps(response)
-				if type(response) == str: response = bytes(response, 'UTF-8')
-				yield (Events.CLIENT_RESPONSE_DATA, self.build_headers() + response if response else self.build_headers())
-			#else:
-			#	self.CLIENT_IDENTITY.server.log(f'Can\'t handle {self.headers[b"METHOD"]} method.')
+				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
+
+				for event in response:
+					yield event
