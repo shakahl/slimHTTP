@@ -192,19 +192,21 @@ class FILE():
 		self.fh = None
 		
 		if os.path.isfile(self.path):
-			self.ret_code = 200
+			self.request.ret_code = 200
 			self.size = os.stat(self.path).st_size
 		else:
-			self.ret_code = 404
+			self.request.ret_code = 404
 			self.size = -1
 
 	def __enter__(self, *args, **kwargs):
+		if not os.path.isfile(self.path): return self
 		if not self.fh: self.fh = open(self.path, 'rb')
 
 		return self
 
 	def __exit__(self, *args, **kwargs):
-		self.fh.close()
+		if self.fh:
+			self.fh.close()
 
 	@property
 	def mime(self):
@@ -225,6 +227,7 @@ class FILE():
 
 	@property
 	def data(self, size=-1):
+		if not self.fh: return None
 		yield self.request.build_headers(self.headers) + self.fh.read(size)
 
 class STREAM_CHUNKED(FILE):
@@ -1352,7 +1355,7 @@ class HTTP_REQUEST():
 
 			print('Handling via:', self.CLIENT_IDENTITY.server.REQUESTED_METHOD)
 			# Lastly, handle the request as one of the builtins (POST, GET)
-			if (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
+			if len(self.headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
 				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
 
 				for event in response:
