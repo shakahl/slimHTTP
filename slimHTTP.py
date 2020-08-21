@@ -528,6 +528,7 @@ class HTTP_RESPONSE():
 		if not 'ret_code' in self.kwargs: self.kwargs['ret_code'] = 200
 
 		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
+								204 : b'HTTP/1.1 204 No Content\r\n',
 								206 : b'HTTP/1.1 206 Partial Content\r\n',
 								301 : b'HTTP/1.0 301 Moved Permanently\r\n',
 								307 : b'HTTP/1.1 307 Temporary Redirect\r\n',
@@ -975,8 +976,12 @@ class HTTP_SERVER():
 							elif type(client_response_data[0]) in (FILE, STREAM_CHUNKED):
 								with client_response_data[0] as handle:
 									for data in handle.data:
-										#print('Sending:', len(data), [data[:40], data[-40:]])
-										self.sockets[fileno].send(data)
+										try:
+											self.sockets[fileno].send(data)
+										except:
+											# Stream endpoint disconnected
+											self.sockets[fileno].keep_alive = False
+											break
 						else:
 							break # The client has already recieved data, and was not setup for continius connections. so Keep-Alive has kicked in.
 
