@@ -657,10 +657,15 @@ class HTTP_SERVER():
 		:param conf: Dictionary representing a valid configuration. #TODO: Add a doc on documentation :P
 		:type conf: dict
 		"""
-		if not 'web_root' in conf: return ConfError('Missing "web_root" in configuration.')
-		if not 'index' in conf: return ConfError('Missing "index" in configuration.')
+		if not 'web_root' in conf and ('proxy' not in conf and 'module' not in conf): return ConfError('Missing "web_root" in configuration.')
+		if not 'index' in conf and ('proxy' not in conf and 'module' not in conf): return ConfError('Missing "index" in configuration.')
 		if not 'port' in conf: conf['port'] = self.default_port
 		if not 'addr' in conf: conf['addr'] = ''
+		if 'module' in conf:
+			if not os.path.isfile(conf['module']): return ConfError(f"Missing module for vhost {host}: {os.path.abspath(conf['module'])}")
+			if not os.path.splitext(conf['module'])[1] == '.py': return ConfError(f"vhost {host}'s module is not a python module: {conf['module']}")
+		elif 'proxy' in conf:
+			if not ':' in conf['vhosts'][host]['proxy']: return ConfError(f'Missing port number in proxy definition for vhost {host}: "{conf["vhosts"][host]["proxy"]}"')
 		if 'vhosts' in conf:
 			for host in conf['vhosts']:
 				if 'proxy' in conf['vhosts'][host]:
@@ -1208,7 +1213,7 @@ class HTTP_REQUEST():
 								404 : b'HTTP/1.1 404 Not Found\r\n',
 								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
 		self.response_headers = {}
-		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
+		self.web_root = self.CLIENT_IDENTITY.server.config['web_root'] if 'web_root' in self.CLIENT_IDENTITY.server.config else None
 
 		print(self.CLIENT_IDENTITY.buffer)
 
@@ -1325,12 +1330,42 @@ class HTTP_REQUEST():
 				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
 
 			# Check vhost specifics:
+			# Some duplication of code here, not proud of it, but don't have a clear vision on how to make this pretty.
 			if self.vhost:
 				if 'proxy' in _config['vhosts'][self.vhost]:
 					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
 					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
+					return
 				elif 'module' in _config['vhosts'][self.vhost]:
 					absolute_path = os.path.abspath(_config['vhosts'][self.vhost]['module'])
+					
+					if not absolute_path in virtual.sys.modules:
+						spec = importlib.util.spec_from_file_location(absolute_path, absolute_path)
+						imported = importlib.util.module_from_spec(spec)
+						
+						import_id = uniqueue_id()
+						virtual.sys.modules[absolute_path] = Imported(self.CLIENT_IDENTITY.server, absolute_path, import_id, spec, imported)
+						sys.modules[import_id+'.py'] = imported
+
+					try:
+						with virtual.sys.modules[absolute_path] as module:
+							# We have to re-check the @.route definition after the import, since it *might* have changed
+							# due to imports being allowed to do @.route('/', vhost=this)
+							if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
+
+							elif hasattr(module.imported, 'on_request'):
+								yield (Events.CLIENT_RESPONSE_DATA, module.imported.on_request(self))
+					except ModuleError:
+						self.CLIENT_IDENTITY.close()
+					return
+			else:
+				if 'proxy' in _config:
+					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
+					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
+					return
+				elif 'module' in _config:
+					absolute_path = os.path.abspath(_config['module'])
 					
 					if not absolute_path in virtual.sys.modules:
 						spec = importlib.util.spec_from_file_location(absolute_path, absolute_path)
