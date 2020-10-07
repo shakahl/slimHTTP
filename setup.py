@@ -19,7 +19,7 @@ if not os.path.isdir('./slimHTTP/examples'):
 
 setuptools.setup(
 	name="slimHTTP",
-	version="1.0.1rc5",
+	version="1.0.1rc7",
 	author="Anton Hvornum",
 	author_email="anton@hvornum.se",
 	description="A minimalistic non-threaded HTTP server written in Python. Supports REST & WebSockets¹.",

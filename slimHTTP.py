@@ -395,7 +395,9 @@ class CertManager():
 	It attempts to use the *optional* PyOpenSSL library, if that fails,
 	the backup option is to attempt a subprocess.Popen() call to openssl.
 
-	Warning: WIP!
+	.. warning::
+
+	    Work in progress, most certanly contains errors and issues if *(optionally)* PyOpenSSL isn't present.
 	"""
 	def generate_key_and_cert(key_file, **kwargs):
 		# TODO: Fallback is to use subprocess.Popen('openssl ....')
@@ -547,17 +549,28 @@ class _Sys():
 	modules = {}
 	specs = {}
 class VirtualStorage():
+	"""
+	A virtual storage to simulate `sys.modules` but instead be accessed with
+	`internal.sys.storage` for a internal *"sys"* reference bound to the slimHTTP session.
+	"""
 	def __init__(self):
 		self.sys = _Sys()
 internal = VirtualStorage()
 
 class Imported():
 	"""
-	A wrapper around absolute-path-imported via string modules.
-	Supports context wrapping to catch errors.
+	A wrapper for `import <module>` that instead works like `Imported(<module>)`.
+	It also supports absolute paths, as well as context management:
 
-	Will partially reload *most* of the code in the module in runtime.
-	Certain things won't get reloaded fully (this is a slippery dark slope)
+	.. code-block::python
+
+        with Imported('/path/to/time.py') as time:
+            time.time()
+
+	.. warning::
+
+	    Each time the `Imported()` is contextualized, it reloads the source code.
+	    Any data saved in the previous instance will get wiped, for the most part.
 	"""
 	def __init__(self, path, namespace=None):
 		if not namespace:
@@ -631,6 +644,21 @@ class ROUTE_HANDLER():
 		self.parser = f
 
 class HTTP_RESPONSE():
+	"""
+	Forms a HTTP response to the requesting client.
+	This class is usually used by `GET` or `POST` functions.
+	Or if a `.py` module is called, the return from the `on_request` function
+	within the `.py` module could potentially be a `HTTP_RESPONSE`.
+
+	slimHTTP is designed to recognize a `HTTP_RESPONSE` object, and automatically
+	send the `HTTP_RESPONSE.build()` to the end user.
+
+	:param headers: Any initial headers to load the response with (optional)
+	:type headers: dict
+
+	:param payload: The payload to supply the user with
+	:type payload: bytes
+	"""
 	def __init__(self, headers={}, payload=b'', *args, **kwargs):
 		self.headers = headers
 		self.payload = payload
@@ -845,10 +873,24 @@ class HTTP_SERVER():
 		self.methods[b'GET'] = f
 
 	def GET_func(self, request):
+		"""
+		The built-in `GET` function for slimHTTP.
+		This can be overridden with `@http.GET`.
+
+		It serves static files under whatever configuration was given on startup.
+		As well as support `.py` file handling.
+
+		:param request: The current request from the end user
+		:type request: :ref:`~slimHTTP.HTTP_REQUEST`
+
+		:return: The contents of the file in byte-representation
+		:rtype: bytes
+		"""
+
 		# Join the web_root with the requested URL safely(?) passed through os.path.abspath() removing the initial / or C:\ part.
 		path = os.path.safepath(request.web_root, request.headers[b'URL'])
 		extension = os.path.splitext(path)[1]
-		
+
 		if extension == '.py':
 			if isfile(path):
 				try:
@@ -897,6 +939,25 @@ class HTTP_SERVER():
 		return None
 
 	def REQUESTED_METHOD(self, request):
+		"""
+		A gateway between what method *(GET, POST, OPTIONS etc)* the user requested,
+		and the supported methods within the :ref:`~slimHTTP.HTTP_SERVER` instance.
+
+		It also takes care of appending the `index` file if a non-specific file was given.
+		*(This function is run post-mortem of a `@http.route` was not found)*
+
+		.. warning::
+
+		    There are some "auto magic" in this function that might be confusing. If the method is given
+		    a string, this function tries to append headers. It also converts `dict` into `json.dumps`.
+
+		:param request: The current request from the end user
+		:type request: :ref:`~slimHTTP.HTTP_REQUEST`
+
+		:return: A client response data event
+		:rtype: :ref:`~slimHTTP.Events.CLIENT_RESPONSE_DATA` events
+		"""
+
 		# If the request *ends* on a /
 		# replace it with the index file from either vhosts or default to anything if vhosts non existing.
 		if request.headers[b'URL'][-1] == '/':
@@ -916,6 +977,20 @@ class HTTP_SERVER():
 			yield (Events.CLIENT_RESPONSE_DATA, response)
 
 	def allow(self, allow_list, *args, **kwargs):
+		"""
+		Determainates who is allowed or not allowed onto the server.
+
+		.. warning::
+
+		    Have not been extensively tested.
+
+		:param allow_list: A list of `<ip>/<subnet>` or just `<ip>` of allowed hosts.
+		:type allow_list: list
+
+		:return: Returns the `on_accept` callback.
+		:rtype: :ref:`~slimHTTP.HTTP_SERVER.on_accept_callback`
+		"""
+
 		staging_list = []
 		for item in allow_list:
 			if '/' in item:
@@ -967,18 +1042,23 @@ class HTTP_SERVER():
 	# @route
 	def route(self, url, vhost=None, *args, **kwargs):
 		"""
-		A decorator for statically define HTTP request path's::
+		A decorator for statically define HTTP request path's:
+
+		.. code-block::python
 
 			@app.route('/auth/login')
 			def route_handler(request):
 				print(request.headers)
 
-		.. note:: The above example will handle both GET and POST (any user-defined method actually)
+		.. note::
+
+		    The above example will handle both GET and POST (any user-defined method actually)
 
 		:param timeout: is in seconds
 		:type timeout: integer
 		:param fileno: Limits the return events to a specific socket/client fileno.
 		:type fileno: integer
+
 		:return: `tuple(Events.<type>, EVENT_DATA)`
 		:rtype: iterator
 		"""
@@ -996,6 +1076,7 @@ class HTTP_SERVER():
 		in need of processing, such as accepting new clients and check for data in
 		any of the poll-objects (client sockets/identeties). A basic example of a main event loop would be::
 
+		.. code-block::python
 
 			import slimhttpd
 
@@ -1009,6 +1090,7 @@ class HTTP_SERVER():
 		:type timeout: integer
 		:param fileno: Limits the return events to a specific socket/client fileno.
 		:type fileno: integer
+
 		:return: `tuple(Events.<type>, EVENT_DATA)`
 		:rtype: iterator
 		"""
@@ -1084,6 +1166,16 @@ class HTTP_SERVER():
 
 
 	def handle_file_objects(self, response_obj, fileno):
+		"""
+		This function gets called whenever a :ref:`~slimHTTP.FILE` or :ref:`~slimHTTP.STREAM_CHUNKED` is yielded up the event stack.
+
+		:param request: The current request from the end user
+		:type request: :ref:`~slimHTTP.HTTP_REQUEST`
+
+		:return: A client response data event
+		:rtype: :ref:`~slimHTTP.Events.CLIENT_RESPONSE_DATA` events
+		"""
+
 		with response_obj as FILE_OBJ:
 			if not (chunk := FILE_OBJ.chunk):
 				chunk = b''
