@@ -572,10 +572,10 @@ class Imported():
 			self.spec = internal.sys.specs[namespace]
 
 	def __repr__(self):
-		if self.imported:
-			return self.imported.__repr__()
-		else:
-			return f"<loaded-module '{os.path.splitext(os.path.basename(self._path))[0]}' from '{self.path}' (Imported-wrapped)>"
+	#	if self.imported:
+	#		return self.imported.__repr__()
+	#	else:
+		return f"<loaded-module '{os.path.splitext(os.path.basename(self._path))[0]}' from '{self.path}' (Imported-wrapped)>"
 
 	def __enter__(self, *args, **kwargs):
 		"""
@@ -1479,7 +1479,7 @@ class HTTP_REQUEST():
 					except ModuleError as e:
 						print(e.message)
 					finally:
-						self.CLIENT_IDENTITY.close()
+						return self.CLIENT_IDENTITY.close()
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if len(self.headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
