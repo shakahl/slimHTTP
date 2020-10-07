@@ -4,7 +4,7 @@ import importlib.util, traceback
 from os.path import isfile, abspath
 from hashlib import sha512
 from json import dumps
-from time import time, sleep
+from time import time#, sleep
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 								 # requires us to decode the string before guessing type.
 try:
@@ -77,7 +77,7 @@ except:
 		def register(self, fileno, *args, **kwargs):
 			self.monitoring[fileno] = True
 
-		def poll(self, timeout=0.5, *args, **kwargs):
+		def poll(self, timeout=0.05, *args, **kwargs):
 			try:
 				return [[fileno, 1] for fileno in select.select(list(self.monitoring.keys()), [], [], timeout)[0]]
 			except OSError:
@@ -121,6 +121,7 @@ def safepath(root, path):
 	return os.path.join(root_abs, *os.path.splitall(path_abs)[1:])
 os.path.safepath = safepath
 
+GLOBAL_POLL_TIMEOUT = 0.001
 MAX_MEM_ALLOC = 1024*50
 HTTP = 0b0001
 HTTPS = 0b0010
@@ -190,6 +191,7 @@ class FILE():
 		self.request = request
 		self._path = path
 		self.fh = None
+		self.headers_sent = False
 		
 		if os.path.isfile(self.path):
 			self.request.ret_code = 200
@@ -197,6 +199,9 @@ class FILE():
 		else:
 			self.request.ret_code = 404
 			self.size = -1
+
+	def __repr__(self):
+		return f'<slimHTTP.FILE object "{self.path}" at {id(self)}>'
 
 	def __enter__(self, *args, **kwargs):
 		if not os.path.isfile(self.path): return self
@@ -230,13 +235,29 @@ class FILE():
 		if not self.fh: return None
 		yield self.request.build_headers(self.headers) + self.fh.read(size)
 
+	@property
+	def chunk(self, size=-1):
+		if not self.fh: return None
+		return self.fh.read(size)
+
 class STREAM_CHUNKED(FILE):
 	def __init__(self, request, path, start=0, chunksize=MAX_MEM_ALLOC):
 		super(STREAM_CHUNKED, self).__init__(request, path)
+		if not 'STREAM_CHUNKED' in request.session_storage:
+			request.session_storage['STREAM_CHUNKED'] = self
+			self.headers_sent = False
+			self.chunksize = chunksize
+		else:
+			if not start: start = request.session_storage['STREAM_CHUNKED'].pos
+			self.headers_sent = request.session_storage['STREAM_CHUNKED'].headers_sent
+			self.chunksize = request.session_storage['STREAM_CHUNKED'].chunksize
+
 		self.pos = start
-		self.chunksize = chunksize
+		self.EOF = False
 		# self.ret_code = 206
-		self.headers_sent = False
+
+	def __repr__(self):
+		return f'<slimHTTP.STREAM_CHUNKED object "{self.path}" at {id(self)}>'
 
 	def __enter__(self, *args, **kwargs):
 		if not self.fh: self.fh = open(self.path, 'rb')
@@ -247,6 +268,7 @@ class STREAM_CHUNKED(FILE):
 	def __exit__(self, *args, **kwargs):
 		if self.pos >= self.size:
 			self.fh.close()
+			self.fh = None
 
 	@property
 	def headers(self):
@@ -258,17 +280,24 @@ class STREAM_CHUNKED(FILE):
 
 	@property
 	def data(self):
-		self.pos += self.chunksize # Safe to move forward before yielding due to __enter__
-		
 		while self.fh.tell() < self.size:
-			chunk = self.fh.read(self.chunksize)
-			if not self.headers_sent:
-				self.headers_sent = True
-				yield self.request.build_headers(self.headers) + bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
-			else:
-				yield bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
+			self.pos += self.chunksize # Safe to move forward before yielding due to __enter__
+			yield self.fh.read(self.chunksize)
+			#if not self.headers_sent:
+			#	self.headers_sent = True
+			#	yield self.request.build_headers(self.headers) + bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
+			#else:
+			#	yield bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
 
-		yield b'0\r\n\r\n'
+		#yield b'0\r\n\r\n'
+
+	@property
+	def chunk(self):
+		self.pos += self.chunksize
+		chunk = self.fh.read(self.chunksize)
+		if len(chunk) <= 0:
+			self.EOF = True
+		return chunk
 
 # def get_file(request, ignore_read=False):
 # 	"""
@@ -605,6 +634,7 @@ class HTTP_SERVER():
 			raise config_error
 
 		self.sockets = {}
+		self.streams = {}
 		self.setup_socket()
 		self.main_sock_fileno = self.sock.fileno()
 		
@@ -657,15 +687,10 @@ class HTTP_SERVER():
 		:param conf: Dictionary representing a valid configuration. #TODO: Add a doc on documentation :P
 		:type conf: dict
 		"""
-		if not 'web_root' in conf and ('proxy' not in conf and 'module' not in conf): return ConfError('Missing "web_root" in configuration.')
-		if not 'index' in conf and ('proxy' not in conf and 'module' not in conf): return ConfError('Missing "index" in configuration.')
+		if not 'web_root' in conf: return ConfError('Missing "web_root" in configuration.')
+		if not 'index' in conf: return ConfError('Missing "index" in configuration.')
 		if not 'port' in conf: conf['port'] = self.default_port
 		if not 'addr' in conf: conf['addr'] = ''
-		if 'module' in conf:
-			if not os.path.isfile(conf['module']): return ConfError(f"Missing module for vhost {host}: {os.path.abspath(conf['module'])}")
-			if not os.path.splitext(conf['module'])[1] == '.py': return ConfError(f"vhost {host}'s module is not a python module: {conf['module']}")
-		elif 'proxy' in conf:
-			if not ':' in conf['vhosts'][host]['proxy']: return ConfError(f'Missing port number in proxy definition for vhost {host}: "{conf["vhosts"][host]["proxy"]}"')
 		if 'vhosts' in conf:
 			for host in conf['vhosts']:
 				if 'proxy' in conf['vhosts'][host]:
@@ -741,28 +766,6 @@ class HTTP_SERVER():
 		self.methods[b'GET'] = f
 
 	def GET_func(self, request):
-		return self.local_file(request)
-
-	def REQUESTED_METHOD(self, request):
-		# If the request *ends* on a /
-		# replace it with the index file from either vhosts or default to anything if vhosts non existing.
-		if request.headers[b'URL'][-1] == '/':
-			if request.vhost and 'index' in self.config['vhosts'][request.vhost]:
-				index_files = self.config['vhosts'][request.vhost]['index']
-				if (_ := request.locate_index_file(index_files, return_any=False)):
-					request.headers[b'URL'] += _
-		if request.headers[b'URL'][-1] == '/':
-			request.headers[b'URL'] += request.locate_index_file(self.config['index'], return_any=True)
-
-		if request.headers[b'METHOD'] in self.methods:
-			response = self.methods[request.headers[b'METHOD']](request)
-
-			if type(response) == dict: response = json.dumps(response)
-			if type(response) == str: response = self.build_headers() + bytes(response, 'UTF-8')
-			if type(response) not in (FILE, STREAM_CHUNKED, bytes): response = self.build_headers() 
-			yield (Events.CLIENT_RESPONSE_DATA, response)
-
-	def local_file(self, request):
 		path = request.headers[b'URL']
 		extension = os.path.splitext(path)[1]
 		if extension == '.py':
@@ -818,6 +821,25 @@ class HTTP_SERVER():
 				F_OBJ = STREAM_CHUNKED(request, path)
 
 			return F_OBJ
+
+	def REQUESTED_METHOD(self, request):
+		# If the request *ends* on a /
+		# replace it with the index file from either vhosts or default to anything if vhosts non existing.
+		if request.headers[b'URL'][-1] == '/':
+			if request.vhost and 'index' in self.config['vhosts'][request.vhost]:
+				index_files = self.config['vhosts'][request.vhost]['index']
+				if (_ := request.locate_index_file(index_files, return_any=False)):
+					request.headers[b'URL'] += _
+		if request.headers[b'URL'][-1] == '/':
+			request.headers[b'URL'] += request.locate_index_file(self.config['index'], return_any=True)
+
+		if request.headers[b'METHOD'] in self.methods:
+			response = self.methods[request.headers[b'METHOD']](request)
+
+			if type(response) == dict: response = json.dumps(response)
+			if type(response) == str: response = self.build_headers() + bytes(response, 'UTF-8')
+			if type(response) not in (FILE, STREAM_CHUNKED, bytes): response = self.build_headers() 
+			yield (Events.CLIENT_RESPONSE_DATA, response)
 
 	def allow(self, allow_list, *args, **kwargs):
 		staging_list = []
@@ -894,7 +916,7 @@ class HTTP_SERVER():
 	def process_new_client(self, socket, address):
 		return socket, address
 
-	def poll(self, timeout=0.2, fileno=None):
+	def poll(self, timeout=GLOBAL_POLL_TIMEOUT, fileno=None):
 		"""
 		poll is to be called from the main event loop. poll will process any queues
 		in need of processing, such as accepting new clients and check for data in
@@ -918,7 +940,16 @@ class HTTP_SERVER():
 		"""
 		for left_over in self.sockets:
 			if self.sockets[left_over].has_data():
-				yield self.do_the_dance(left_over)
+				#yield self.do_the_dance(left_over)
+				for dance_event_id, *dance_event_data in self.do_the_dance(left_over): # Then yield whatever result came from that data
+					yield dance_event_id, dance_event_data
+
+		for stream_socket in list(self.streams.keys()):
+			for file_event, file_data in self.handle_file_objects(self.streams[stream_socket], stream_socket):
+				yield file_event, file_data
+			if self.streams[stream_socket].EOF:
+				self.sockets[stream_socket].close()
+				del(self.streams[stream_socket])
 
 		for socket_fileno, event_type in self.pollobj.poll(timeout):
 			if fileno:
@@ -964,32 +995,62 @@ class HTTP_SERVER():
 						yield (client_event, client_event_data) # Yield "we got data" event
 
 						if client_event == Events.CLIENT_DATA:
-							yield self.do_the_dance(socket_fileno) # Then yield whatever result came from that data
+							for dance_event_id, dance_event_data in self.do_the_dance(socket_fileno): # Then yield whatever result came from that data
+								yield dance_event_id, dance_event_data
+
+								if type(dance_event_data) in (FILE, STREAM_CHUNKED):
+									for file_event, file_data in self.handle_file_objects(dance_event_data, socket_fileno):
+										yield file_event, file_data
+
+									if type(dance_event_data) is STREAM_CHUNKED:
+										self.streams[socket_fileno] = dance_event_data
+
+
+	def handle_file_objects(self, response_obj, fileno):
+		with response_obj as FILE_OBJ:
+			if not (chunk := FILE_OBJ.chunk):
+				chunk = b''
+
+			if not FILE_OBJ.headers_sent:
+				FILE_OBJ.headers_sent = True
+				if type(response_obj) == STREAM_CHUNKED:
+					partial_data = FILE_OBJ.request.build_headers(FILE_OBJ.headers) + bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
+				elif type(response_obj) == FILE:
+					partial_data = FILE_OBJ.request.build_headers(FILE_OBJ.headers) + chunk
+
+			elif len(chunk) and type(response_obj) == STREAM_CHUNKED:
+				partial_data = bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
+			elif type(response_obj) == STREAM_CHUNKED:
+				partial_data = b'0\r\n\r\n'
+				response_obj.EOF = True
+			else:
+				print(' * * * Should never come here * * *')
+
+			yield (Events.CLIENT_RESPONSE_DATA, partial_data)
+			try:
+				self.sockets[fileno].send(partial_data)
+			except Exception as e:
+				# Stream endpoint disconnected
+				self.sockets[fileno].keep_alive = False
+				return
 
 	def do_the_dance(self, fileno):
-		self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
+#		self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
 		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
 			if parse_event == Events.CLIENT_REQUEST:
-				for response_event, *client_response_data in client_parsed_data[0].parse():
+				for response_event, client_response_data in client_parsed_data[0].parse():
 					yield (response_event, client_response_data)
 
 					if response_event in Events.DATA_EVENTS and client_response_data:
 						if fileno in self.sockets:
-							if type(client_response_data[0]) is bytes:
-								self.sockets[fileno].send(client_response_data[0])
-							elif type(client_response_data[0]) is HTTP_RESPONSE:
-								self.sockets[fileno].send(client_response_data[0].build())
-							elif type(client_response_data[0]) in (FILE, STREAM_CHUNKED):
-								with client_response_data[0] as handle:
-									for data in handle.data:
-										try:
-											self.sockets[fileno].send(data)
-										except:
-											# Stream endpoint disconnected
-											self.sockets[fileno].keep_alive = False
-											break
+							if type(client_response_data) is bytes:
+								self.sockets[fileno].send(client_response_data)
+							elif type(client_response_data) is HTTP_RESPONSE:
+								self.sockets[fileno].send(client_response_data.build())
+							elif type(client_response_data) is STREAM_CHUNKED:
+								self.sockets[fileno].keep_alive = True # TODO: Move this to some more logical place
 						else:
 							break # The client has already recieved data, and was not setup for continius connections. so Keep-Alive has kicked in.
 
@@ -1100,9 +1161,10 @@ class HTTP_CLIENT_IDENTITY():
 		self.closing = False
 		self.keep_alive = False
 
-		self.buffer = b''
-
 		if on_close: self.on_close = on_close
+
+		self.buffer = b''
+		self.request = HTTP_REQUEST(self)
 
 	def close(self):
 		if not self.closing:
@@ -1113,7 +1175,7 @@ class HTTP_CLIENT_IDENTITY():
 		self.closing = True
 		self.server.on_close_func(self)
 
-	def poll(self, timeout=0.2, force_recieve=False):
+	def poll(self, timeout=GLOBAL_POLL_TIMEOUT, force_recieve=False):
 		"""
 		@force_recieve: If the caller knows there's data, we can override
 		the polling event and skip straight to data recieving.
@@ -1137,7 +1199,7 @@ class HTTP_CLIENT_IDENTITY():
 
 	def build_request(self):
 		try:
-			yield (Events.CLIENT_REQUEST, HTTP_REQUEST(self))
+			yield (Events.CLIENT_REQUEST, self.request)
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -1149,7 +1211,7 @@ class HTTP_CLIENT_IDENTITY():
 		return True if len(self.buffer) else False
 
 	def __repr__(self):
-		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port}>'
+		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port} -> {self.fileno}>'
 
 class HTTP_PROXY_REQUEST():
 	"""
@@ -1169,7 +1231,7 @@ class HTTP_PROXY_REQUEST():
 	def parse(self):
 		poller = epoll()
 		sock = socket()
-		sock.settimeout(0.2)
+		sock.settimeout(0.02)
 		proxy, proxy_port = self.config['vhosts'][self.vhost]['proxy'].split(':',1)
 		try:
 			sock.connect((proxy, int(proxy_port)))
@@ -1189,7 +1251,7 @@ class HTTP_PROXY_REQUEST():
 		# TODO: this will lock the entire application,
 		#       some how we'll have to improve this.
 		#       But for small scale stuff this will do, at least for testing.
-		while poller.poll(0.2):
+		while poller.poll(0.02):
 			tmp = sock.recv(8192)
 			if len(tmp) <= 0: break
 			data_buffer += tmp
@@ -1213,9 +1275,8 @@ class HTTP_REQUEST():
 								404 : b'HTTP/1.1 404 Not Found\r\n',
 								418 : b'HTTP/1.0 I\'m a teapot\r\n'}
 		self.response_headers = {}
-		self.web_root = self.CLIENT_IDENTITY.server.config['web_root'] if 'web_root' in self.CLIENT_IDENTITY.server.config else None
-
-		print(self.CLIENT_IDENTITY.buffer)
+		self.session_storage = {}
+		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
 
 	@property
 	def data(self):
@@ -1287,7 +1348,7 @@ class HTTP_REQUEST():
 		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
-			self.CLIENT_IDENTITY.server.log(f'Request from {self.CLIENT_IDENTITY} being parsed: {header[:2048]} ({remainder[:2048]})')
+#			self.CLIENT_IDENTITY.server.log(f'Request from {self.CLIENT_IDENTITY} being parsed: {header[:2048]} ({remainder[:2048]})')
 			self.payload = b''
 
 			try:
@@ -1330,12 +1391,10 @@ class HTTP_REQUEST():
 				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
 
 			# Check vhost specifics:
-			# Some duplication of code here, not proud of it, but don't have a clear vision on how to make this pretty.
 			if self.vhost:
 				if 'proxy' in _config['vhosts'][self.vhost]:
 					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
 					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
-					return
 				elif 'module' in _config['vhosts'][self.vhost]:
 					absolute_path = os.path.abspath(_config['vhosts'][self.vhost]['module'])
 					
@@ -1359,39 +1418,11 @@ class HTTP_REQUEST():
 					except ModuleError:
 						self.CLIENT_IDENTITY.close()
 					return
-			else:
-				if 'proxy' in _config:
-					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
-					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
-					return
-				elif 'module' in _config:
-					absolute_path = os.path.abspath(_config['module'])
-					
-					if not absolute_path in virtual.sys.modules:
-						spec = importlib.util.spec_from_file_location(absolute_path, absolute_path)
-						imported = importlib.util.module_from_spec(spec)
-						
-						import_id = uniqueue_id()
-						virtual.sys.modules[absolute_path] = Imported(self.CLIENT_IDENTITY.server, absolute_path, import_id, spec, imported)
-						sys.modules[import_id+'.py'] = imported
 
-					try:
-						with virtual.sys.modules[absolute_path] as module:
-							# We have to re-check the @.route definition after the import, since it *might* have changed
-							# due to imports being allowed to do @.route('/', vhost=this)
-							if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
-								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
-
-							elif hasattr(module.imported, 'on_request'):
-								yield (Events.CLIENT_RESPONSE_DATA, module.imported.on_request(self))
-					except ModuleError:
-						self.CLIENT_IDENTITY.close()
-					return
-
-			print('Handling via:', self.CLIENT_IDENTITY.server.REQUESTED_METHOD)
+#			print('Handling via:', self.CLIENT_IDENTITY.server.REQUESTED_METHOD)
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if len(self.headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
-				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
+#				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
 
-				for event in response:
-					yield event
+				for event, event_data in response:
+					yield event, event_data
