@@ -18,6 +18,16 @@ Supports: REST, WebSocket¹, vhosts, reverse proxy and static file delivery.
  * No threads used by default *(fully relies on `epoll()` and `select()` on Windows)*
  * flexible runtime configuration and re-configuration *(using annotation `@http.configuration`)*
 
+## Installation
+
+The project is hosted on PyPi and can be installed with `pip`.
+
+    sudo pip install slimHTTP
+
+But it can also be cloned manually *(or downloaded)*
+
+    git clone https://github.com/Torxed/slimHTTP
+
 ## Minimal example
 
 ```py
