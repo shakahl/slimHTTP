@@ -947,9 +947,12 @@ class HTTP_SERVER():
 		for stream_socket in list(self.streams.keys()):
 			for file_event, file_data in self.handle_file_objects(self.streams[stream_socket], stream_socket):
 				yield file_event, file_data
-			if self.streams[stream_socket].EOF:
-				self.sockets[stream_socket].close()
-				del(self.streams[stream_socket])
+			try:
+				if self.streams[stream_socket].EOF:
+					self.sockets[stream_socket].close()
+					del(self.streams[stream_socket])
+			except KeyError:
+				pass # Socket was removed during processing (we're single threaded, but loops do occur.)
 
 		for socket_fileno, event_type in self.pollobj.poll(timeout):
 			if fileno:
