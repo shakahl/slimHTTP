@@ -16,10 +16,20 @@ except:
 			pass
 		def add_cert(self, *args, **kwargs):
 			pass
+
 	class SSL():
 		"""
 		This is *not* a crypto implementation!
-		This is a mock function to get ssl lib to behave like PyOpenSSL.SSL
+		
+		This is a mock class to get the native lib `ssl` to behave like `PyOpenSSL.SSL`.
+		The net result should be a transparent experience for programmers by default opting out of `PyOpenSSL`.
+
+		.. warning::
+
+		    PyOpenSSL is optional, but certain expectations of behavior might be scewed if you don't have it.
+		    Most importantly, some flags will have no affect unless the optional dependency is met - but the behavior
+		    of the function-call should remain largely the same.
+
 		"""
 		TLSv1_2_METHOD = 0b110
 		VERIFY_PEER = 0b1
@@ -441,7 +451,8 @@ class slimHTTP_Error(BaseException):
 	pass
 
 class ModuleError(BaseException):
-	pass
+	def __init__(self, message, path):
+		print(f'[Error] {message} in {path}')
 
 class ConfError(BaseException):
 	def __init__(self, message):
@@ -492,10 +503,11 @@ class Events():
 
 class _Sys():
 	modules = {}
+	specs = {}
 class VirtualStorage():
 	def __init__(self):
 		self.sys = _Sys()
-virtual = VirtualStorage()
+internal = VirtualStorage()
 
 class Imported():
 	"""
@@ -505,35 +517,60 @@ class Imported():
 	Will partially reload *most* of the code in the module in runtime.
 	Certain things won't get reloaded fully (this is a slippery dark slope)
 	"""
-	def __init__(self, server, path, import_id, spec, imported):
-		self.server = server
-		self.path = path
-		self.import_id = import_id # For lookups in virtual.sys.modules
-		self.spec = spec
-		self.imported = imported
-		self.instance = None
+	def __init__(self, path, namespace=None):
+		if not namespace:
+			namespace = os.path.splitext(os.path.basename(path))[0]
+		self.namespace = namespace
+
+		self._path = path
+		self.spec = None
+		self.imported = None
+		if namespace in internal.sys.modules:
+			self.imported = internal.sys.modules[namespace]
+			self.spec = internal.sys.specs[namespace]
+
+	def __repr__(self):
+		if self.imported:
+			return self.imported.__repr__()
+		else:
+			return f"<unloaded-module '{os.path.splitext(os.path.basename(self._path))[0]}' from '{self.path}' (Imported-wrapped)>"
 
 	def __enter__(self, *args, **kwargs):
 		"""
-		It's important to know that it does cause a re-load of the module.
-		So any persistant stuff **needs** to be stowewd away.
+		Opens a context to the absolute-module.
+		Errors are caught and through as a :ref:`~slimHTTP.ModuleError`.
 
-		Session files *(`pickle.dump()`)* is a good option, or god forbig `__builtin__['storage'] ...` is an option for in-memory stuff.
+		.. warning::
+		
+		    It will re-load the code and thus re-instanciate the memory-space for the module.
+		    So any persistant data or sessions **needs** to be stowewd away between imports.
+		    Session files *(`pickle.dump()`)* is a good option *(or god forbid, `__builtins__['storage'] ...` is an option for in-memory stuff)*.
 		"""
+
+		# import_id = uniqueue_id()
+		# virtual.sys.modules[absolute_path] = Imported(self.CLIENT_IDENTITY.server, absolute_path, import_id, spec, imported)
+		# sys.modules[import_id+'.py'] = imported
+		if not self.spec and not self.imported:
+			self.spec = internal.sys.specs[self.namespace] = importlib.util.spec_from_file_location(self.namespace, self.path)
+			self.imported = internal.sys.modules[self.namespace] = importlib.util.module_from_spec(self.spec)
+
 		try:
-			self.instance = self.spec.loader.exec_module(self.imported)
+			self.spec.loader.exec_module(self.imported)
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			self.server.log(f'Gracefully handled module error in {self.path}: {e}')
-			self.server.log(traceback.format_exc())
 			raise ModuleError(traceback.format_exc())
-		return self
+
+		return self.imported
 
 	def __exit__(self, *args, **kwargs):
 		# TODO: https://stackoverflow.com/questions/28157929/how-to-safely-handle-an-exception-inside-a-context-manager
 		if len(args) >= 2 and args[1]:
 			raise args[1]
+
+	@property
+	def path(self):
+		return os.path.abspath(self._path)
 
 class ROUTE_HANDLER():
 	"""
@@ -766,46 +803,27 @@ class HTTP_SERVER():
 		self.methods[b'GET'] = f
 
 	def GET_func(self, request):
-		path = request.headers[b'URL']
+		# Join the web_root with the requested URL safely(?) passed through os.path.abspath() removing the initial / or C:\ part.
+		path = os.path.safepath(request.web_root, request.headers[b'URL'])
 		extension = os.path.splitext(path)[1]
 		if extension == '.py':
-			if isfile(f'{request.web_root}/{path}'):
-				if (handle := handle_py_request(f'{request.web_root}/{path}')):
-
-					response = handle.process(request)
-					if response:
-						if len(response) == 1: response = {}, response # Assume payload, and pad with headers
-						respond_headers, response = response
-
-						if respond_headers:
-							if b'_code' in respond_headers:
-								request.ret_code = respond_headers[b'_code']
-								del(respond_headers[b'_code']) # Ugly hack.. Don't like.. TODO! Fix!
-							for header in respond_headers:
-								request.response_headers[header] = respond_headers[header]
-
-							if not b'Content-Type' in respond_headers:
-								request.response_headers[b'Content-Type'] = b'text/html'
-
-						else:
-							request.response_headers[b'Content-Type'] = b'text/html'
-				else:
-					response = b''
-					request.response_headers[b'Content-Type'] = b'plain/text'
-
-				if not b'Content-Length' in request.response_headers:
-					request.response_headers[b'Content-Length'] = bytes(str(len(response)), 'UTF-8')
-				return response
+			if isfile(path):
+				try:
+					with Imported(path) as module:
+						# Double-check so that the imported module didn't inject something
+						# into the route options for the specific vhost.
+						if request.vhost in request.CLIENT_IDENTITY.server.routes and request.headers[b'URL'] in request.CLIENT_IDENTITY.server.routes[request.vhost]:
+							return request.CLIENT_IDENTITY.server.routes[request.vhost][request.headers[b'URL']].parser(request)
+						elif hasattr(module, 'on_request'):
+							return module.on_request(request)
+				except ModuleError as e:
+					print(e.message)
+					request.CLIENT_IDENTITY.close()
 			else:
 				request.ret_code = 404
-				data = None
-
-			return data
+				return
 		else:
 		## We're dealing with a normal, non .py file.
-			# Join the web_root with the requested URL safely(?) passed through os.path.abspath() removing the initial / or C:\ part.
-			path = os.path.safepath(request.web_root, request.headers[b'URL'])
-
 			F_OBJ = FILE(request, path)
 
 			if b'range' in request.headers:
@@ -822,6 +840,8 @@ class HTTP_SERVER():
 
 			return F_OBJ
 
+		return None
+
 	def REQUESTED_METHOD(self, request):
 		# If the request *ends* on a /
 		# replace it with the index file from either vhosts or default to anything if vhosts non existing.
@@ -837,8 +857,8 @@ class HTTP_SERVER():
 			response = self.methods[request.headers[b'METHOD']](request)
 
 			if type(response) == dict: response = json.dumps(response)
-			if type(response) == str: response = self.build_headers() + bytes(response, 'UTF-8')
-			if type(response) not in (FILE, STREAM_CHUNKED, bytes): response = self.build_headers() 
+			if type(response) == str: response = request.build_headers() + bytes(response, 'UTF-8')
+			if type(response) not in (FILE, STREAM_CHUNKED, bytes): response = request.build_headers() 
 			yield (Events.CLIENT_RESPONSE_DATA, response)
 
 	def allow(self, allow_list, *args, **kwargs):
@@ -1398,29 +1418,21 @@ class HTTP_REQUEST():
 				if 'proxy' in _config['vhosts'][self.vhost]:
 					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
 					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
-				elif 'module' in _config['vhosts'][self.vhost]:
-					absolute_path = os.path.abspath(_config['vhosts'][self.vhost]['module'])
-					
-					if not absolute_path in virtual.sys.modules:
-						spec = importlib.util.spec_from_file_location(absolute_path, absolute_path)
-						imported = importlib.util.module_from_spec(spec)
-						
-						import_id = uniqueue_id()
-						virtual.sys.modules[absolute_path] = Imported(self.CLIENT_IDENTITY.server, absolute_path, import_id, spec, imported)
-						sys.modules[import_id+'.py'] = imported
 
+					return
+				elif 'module' in _config['vhosts'][self.vhost]:
 					try:
-						with virtual.sys.modules[absolute_path] as module:
-							# We have to re-check the @.route definition after the import, since it *might* have changed
-							# due to imports being allowed to do @.route('/', vhost=this)
+						with Imported(_config['vhosts'][self.vhost]['module']) as module:
+							# Double-check so that the imported module didn't inject something
+							# into the route options for the specific vhost.
 							if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
 								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
-
-							elif hasattr(module.imported, 'on_request'):
-								yield (Events.CLIENT_RESPONSE_DATA, module.imported.on_request(self))
-					except ModuleError:
+							elif hasattr(module, 'on_request'):
+								yield (Events.CLIENT_RESPONSE_DATA, module.on_request(self))
+					except ModuleError as e:
+						print(e.message)
+					finally:
 						self.CLIENT_IDENTITY.close()
-					return
 
 #			print('Handling via:', self.CLIENT_IDENTITY.server.REQUESTED_METHOD)
 			# Lastly, handle the request as one of the builtins (POST, GET)
