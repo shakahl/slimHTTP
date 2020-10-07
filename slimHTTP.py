@@ -992,7 +992,7 @@ class HTTP_SERVER():
 			http = slimhttpd.host(slimhttpd.HTTP)
 
 			while 1:
-				for event, *event_data in http.poll():
+				for event, event_data in http.poll():
 					pass
 
 		:param timeout: is in seconds
@@ -1005,7 +1005,7 @@ class HTTP_SERVER():
 		for left_over in self.sockets:
 			if self.sockets[left_over].has_data():
 				#yield self.do_the_dance(left_over)
-				for dance_event_id, *dance_event_data in self.do_the_dance(left_over): # Then yield whatever result came from that data
+				for dance_event_id, dance_event_data in self.do_the_dance(left_over): # Then yield whatever result came from that data
 					yield dance_event_id, dance_event_data
 
 		for stream_socket in list(self.streams.keys()):
@@ -1058,8 +1058,8 @@ class HTTP_SERVER():
 					yield (Events.SERVER_ACCEPT, identity)
 				else:
 					## Check for data
-					for client_event, *client_event_data in self.sockets[socket_fileno].poll(timeout, force_recieve=True):
-						yield (client_event, client_event_data) # Yield "we got data" event
+					for client_event, client_event_data in self.sockets[socket_fileno].poll(timeout, force_recieve=True):
+						yield (client_event, client_event_data) # Yield the events back up the stack
 
 						if client_event == Events.CLIENT_DATA:
 							for dance_event_id, dance_event_data in self.do_the_dance(socket_fileno): # Then yield whatever result came from that data
@@ -1103,11 +1103,11 @@ class HTTP_SERVER():
 
 	def do_the_dance(self, fileno):
 		self.log(f'Request from {self.sockets[fileno]}')
-		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
+		for parse_event, client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
 			if parse_event == Events.CLIENT_REQUEST:
-				for response_event, client_response_data in client_parsed_data[0].parse():
+				for response_event, client_response_data in client_parsed_data.parse():
 					yield (response_event, client_response_data)
 
 					if response_event in Events.DATA_EVENTS and client_response_data:
@@ -1133,7 +1133,7 @@ class HTTPS_SERVER(HTTP_SERVER):
 
 	def run(self):
 		while 1:
-			for event, *event_data in self.poll():
+			for event, event_data in self.poll():
 				pass
 
 	def check_config(self, conf):
