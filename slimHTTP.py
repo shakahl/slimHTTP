@@ -848,6 +848,7 @@ class HTTP_SERVER():
 		# Join the web_root with the requested URL safely(?) passed through os.path.abspath() removing the initial / or C:\ part.
 		path = os.path.safepath(request.web_root, request.headers[b'URL'])
 		extension = os.path.splitext(path)[1]
+		
 		if extension == '.py':
 			if isfile(path):
 				try:
@@ -867,14 +868,23 @@ class HTTP_SERVER():
 				request.ret_code = 404
 				return
 		else:
-		## We're dealing with a normal, non .py file.
+			## We're dealing with a normal, non .py file.
 			F_OBJ = FILE(request, path)
+			file_size = bytes(str(F_OBJ.size), 'UTF-8')
 
 			if b'range' in request.headers:
 				_, data_range = request.headers[b'range'].split(b'=',1)
-				start, stop = [int(x) for x in data_range.split(b'-')]
-				request.response_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{length}', 'UTF-8')
-				F_OBJ = STREAM_CHUNKED(request, path, start, chunksize=end-stop)
+				start, stop = data_range.split(b'-', 1)
+				start = int(start.decode('UTF-8'))
+				if len(stop) == 0:
+					stop = file_size
+					chunksize = 8192
+				else:
+					stop = int(stop.decode('UTF-8'))
+					chunksize = min(stop-start, 8192)
+
+				request.response_headers[b'Content-Range'] = bytes(f'bytes {start}-{stop}/{file_size}', 'UTF-8')
+				F_OBJ = STREAM_CHUNKED(request, path, start, chunksize=chunksize)
 			elif F_OBJ.mime == 'application/octet-stream':
 				## TODO: Not tested
 				request.response_headers[b'Accept-Ranges'] = b'bytes'
