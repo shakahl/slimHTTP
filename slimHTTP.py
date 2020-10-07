@@ -2,7 +2,6 @@ import ssl, os, sys, random, json, glob
 import ipaddress
 import importlib.util, traceback
 from os.path import isfile, abspath
-from hashlib import sha512
 from json import dumps
 from time import time#, sleep
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
@@ -26,9 +25,9 @@ except:
 
 		.. warning::
 
-		    PyOpenSSL is optional, but certain expectations of behavior might be scewed if you don't have it.
-		    Most importantly, some flags will have no affect unless the optional dependency is met - but the behavior
-		    of the function-call should remain largely the same.
+			PyOpenSSL is optional, but certain expectations of behavior might be scewed if you don't have it.
+			Most importantly, some flags will have no affect unless the optional dependency is met - but the behavior
+			of the function-call should remain largely the same.
 
 		"""
 		TLSv1_2_METHOD = 0b110
@@ -94,6 +93,27 @@ except:
 				return []
 
 def splitall(path):
+	"""
+	`os.path.split` but splits the entire path
+	into a list of individual pieces.
+	Essentially a `str.split('/')` but OS independent.
+
+	More or less a solution for of https://stackoverflow.com/questions/3167154/how-to-split-a-dos-path-into-its-components-in-python
+	based on the answer here: https://stackoverflow.com/a/22444703/929999
+
+	Another proposed solution would be (https://stackoverflow.com/a/16595356/929999):
+		path = os.path.normpath(path)
+		path.split(os.sep)
+
+	Down-side is the empty entry for /root/test.txt but not for C:\root\test.txt
+	(inconsistency)
+
+	:param path: A *Nix or Windows path
+	:type path: str
+
+	:return: A list of the paths element, where the root will be '/' or 'C:\\' depending on platform.
+	:rtype: str
+	"""
 	allparts = []
 	while 1:
 		parts = os.path.split(path)
@@ -110,6 +130,19 @@ def splitall(path):
 os.path.splitall = splitall
 
 def safepath(root, path):
+	"""
+	Attempts to make a path safe, as well as remove any traces of
+	the current working directory after resolve to keep relative paths intact.
+
+	:param root: The "jail" in which to constrain the path too
+	:type root: str
+
+	:param path: The relative or absolute path from root
+	:type path: str
+
+	:return: A safe(root+clean(path)) joined string representation of path
+	:rtype: str
+	"""
 	root_abs = os.path.abspath(root)
 	path_abs = os.path.abspath(os.path.join(*os.path.splitall(path)[1:]))
 	cwd = os.getcwd()
@@ -138,9 +171,14 @@ HTTPS = 0b0010
 instances = {}
 def server(mode=HTTPS, *args, **kwargs):
 	"""
-	server() is essentially just a router.
-	It creates a instance of a selected mode (either `HTTP_SERVER` or `HTTPS_SERVER`).
-	It also saves the instance in a shared instance variable for access later.
+	server() is essentially just a router to the appropriate class for the mode selected.
+	It will create a instance of :ref:`~slimHTTP.HTTP_SERVER` or :ref:`~slimHTTP.HTTPS_SERVER` based on `mode`.
+
+	:param mode: Which mode to instanciate (`1` == HTTP, `2` == HTTPS)
+	:type mode: int
+
+	:return: A instance corresponding to the `mode` selected
+	:rtype: :ref:`~slimHTTP.HTTP_SERVER` or :ref:`~slimHTTP.HTTPS_SERVER`
 	"""
 	if mode == HTTPS:
 		instance = HTTPS_SERVER(*args, **kwargs)
@@ -158,46 +196,33 @@ def host(*args, **kwargs):
 	return server(*args, **kwargs)
 
 def drop_privileges():
+	"""
 	#TODO: implement
+
+	Drops the startup privileges to a more suitable production privilege.
+
+	:return: The result of the priv-drop
+	:rtype: bool
+	"""
 	return True
 
-def uniqueue_id(seed_len=24):
-	"""
-	Generates a unique identifier in 2020.
-	TODO: Add a time as well, so we don't repeat the same 24 characters by accident.
-	"""
-	return sha512(os.urandom(seed_len)).hexdigest()
-
-imported_paths = {}
-def handle_py_request(request):
-	"""
-		Handles the import of a specific python file.
-	"""
-	path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
-	old_version = False
-	request.CLIENT_IDENTITY.server.log(f'Request to "{path}"', level=4, origin='slimHTTP', function='handle_py_request')
-	if path not in imported_paths:
-		## https://justus.science/blog/2015/04/19/sys.modules-is-dangerous.html
-		try:
-			request.CLIENT_IDENTITY.server.log(f'Loading : {path}', level=4, origin='slimHTTP')
-			spec = importlib.util.spec_from_file_location(path, path)
-			imported_paths[path] = importlib.util.module_from_spec(spec)
-			spec.loader.exec_module(imported_paths[path])
-			sys.modules[path] = imported_paths[path]
-		except (SyntaxError, ModuleNotFoundError) as e:
-			request.CLIENT_IDENTITY.server.log(f'Failed to load file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
-			return None
-	else:
-		request.CLIENT_IDENTITY.server.log(f'Reloading: {path}', level=4, origin='slimHTTP', function='handle_py_request')
-		try:
-			raise SyntaxError('https://github.com/Torxed/ADderall/issues/11')
-		except SyntaxError as e:
-			old_version = True
-			request.CLIENT_IDENTITY.server.log(f'Failed to reload requested file ({e}): {path}', level=2, origin='slimHTTP', function='handle_py_request')
-	return old_version, imported_paths[f'{path}']
-
 class FILE():
+	"""
+	Whenever a file is to be delivered back, this helper class
+	can make some return codes and headers easier to use.
+
+	Simply put, a class-instance of this class will be yielded
+	up the event chain, picked up and `.data` or `.chunk` will be
+	returned to the client/user.
+
+	:param request: The request object for the current triggering request
+	:type request: :ref:`~slimHTTP.HTTP_REQUEST`
+
+	:param path: The path to the file requested
+	:type path: str
+	"""
 	def __init__(self, request, path):
+		# TODO: Grab the path from the request object?
 		self.request = request
 		self._path = path
 		self.fh = None
@@ -214,6 +239,13 @@ class FILE():
 		return f'<slimHTTP.FILE object "{self.path}" at {id(self)}>'
 
 	def __enter__(self, *args, **kwargs):
+		"""
+		Opens the requested file in a context mode if not already opened.
+		Will automatically be closed by exiting the context *(__exit__)*.
+
+		:return: The `FILE()` instance itself
+		:rtype: :ref:`~slimHTTP.FILE`
+		"""
 		if not os.path.isfile(self.path): return self
 		if not self.fh: self.fh = open(self.path, 'rb')
 
@@ -225,12 +257,26 @@ class FILE():
 
 	@property
 	def mime(self):
+		"""
+		Returns the guessed mime-type of the requested file.
+		Certain file-ending specifics are also implemented due to the lack
+		of support from the builting `mimetype.guess_type` library.
+
+		:return: The mime-type of the file-ending of the requested file
+		:rtype: str
+		"""
 		mime = guess_type(self.path)[0] #TODO: Deviates from bytes pattern. Replace guess_type()
 		if not mime and self.path[-4:] == '.iso': mime = 'application/octet-stream'
 		return mime
 
 	@property
 	def headers(self):
+		"""
+		The headers needed for the corresponding requested file.
+
+		:return: A dictionary of headers needed to deliver the file safely.
+		:rtype: dict
+		"""
 		return {
 			b'Content-Type' : bytes(self.mime, 'UTF-8') if self.mime else b'plain/text',
 			b'Content-Length' : str(self.size)
@@ -238,19 +284,60 @@ class FILE():
 
 	@property
 	def path(self):
-		return os.path.abspath(self._path)
+		"""
+		An absolute path of the requested path.
 
+		:return: A `os.path.abspath` rendering.
+		:rtype: str
+		"""
+		return os.path.abspath(self._path)
+	
 	@property
 	def data(self, size=-1):
+		"""
+		Returns the entierty of the requested file.
+		Does take an optional parameter of `size` to limit the ammount of data returned.
+
+		:param size: Limits the ammount of data returned
+		:type size: int
+
+		:return: The contents of the file in byte-representation
+		:rtype: bytes
+		"""
 		if not self.fh: return None
-		yield self.request.build_headers(self.headers) + self.fh.read(size)
+		yield self.fh.read(size)
 
 	@property
 	def chunk(self, size=-1):
+		"""
+		Returns the entierty of the requested file.
+		Does take an optional parameter of `size` to limit the ammount of data returned.
+
+		:param size: Limits the ammount of data returned
+		:type size: int
+
+		:return: The contents of the file in byte-representation
+		:rtype: bytes
+		"""
 		if not self.fh: return None
 		return self.fh.read(size)
 
 class STREAM_CHUNKED(FILE):
+	"""
+	Behaves in similar fasion to :ref:`~slimHTTP.FILE`, but also supports
+	streaming content. It keeps track of the current position of the file
+	as well as implements `.data` and `.chunk` into two different methods.
+
+	.. note::
+
+	    This class has not been tested with streaming content. Only large files.
+
+	:param request: The current :ref:`~slimHTTP.HTTP_REQUEST` object from the client
+	:type request: :ref:`~slimHTTP.HTTP_REQUEST`
+
+	:param path: The path to the file requested
+	:type path: str
+	"""
 	def __init__(self, request, path, start=0, chunksize=MAX_MEM_ALLOC):
 		super(STREAM_CHUNKED, self).__init__(request, path)
 		if not 'STREAM_CHUNKED' in request.session_storage:
@@ -293,13 +380,6 @@ class STREAM_CHUNKED(FILE):
 		while self.fh.tell() < self.size:
 			self.pos += self.chunksize # Safe to move forward before yielding due to __enter__
 			yield self.fh.read(self.chunksize)
-			#if not self.headers_sent:
-			#	self.headers_sent = True
-			#	yield self.request.build_headers(self.headers) + bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
-			#else:
-			#	yield bytes(f"{hex(len(chunk))[2:]}\r\n", 'UTF-8') + chunk + b'\r\n'
-
-		#yield b'0\r\n\r\n'
 
 	@property
 	def chunk(self):
@@ -308,46 +388,6 @@ class STREAM_CHUNKED(FILE):
 		if len(chunk) <= 0:
 			self.EOF = True
 		return chunk
-
-# def get_file(request, ignore_read=False):
-# 	"""
-# 	Read a local file.
-# 	"""
-# 	real_path = abspath('{}/{}'.format(request.web_root, request.headers[b'URL']))
-
-# 	request.CLIENT_IDENTITY.server.log(f'Opening local file "{real_path}"')
-
-# 	extension = os.path.splitext(real_path)[1]
-
-# 	if isfile(real_path) and extension != '.py':
-# 		if ignore_read is False:
-# 			start, stop = None, None
-# 			if b'range' in request.headers:
-# 				_, data_range = request.headers[b'range'].split(b'=',1)
-# 				start, stop = [int(x) for x in data_range.split(b'-')]
-# 				request.CLIENT_IDENTITY.server.log(f'Limiting to range: {start}-{stop}')
-
-# 			elif os.stat(real_path).st_size >= MAX_MEM_ALLOC:
-# 				print('File size to large, forcing range.')
-# 				start = 0
-# 				stop = MAX_MEM_ALLOC
-
-# 			with open(real_path, 'rb') as fh:
-# 				if start:
-# 					fh.seek(start)
-# 				if stop:
-# 					data = fh.read(stop-start)
-# 				else:
-# 					data = fh.read()
-# 		else:
-# 			data = b''
-		
-# 		filesize = os.stat(real_path).st_size
-# 		request.CLIENT_IDENTITY.server.log(f'Returning file content: {len(data)} (actual size: {filesize})')
-# 		return 200, real_path, filesize, data
-
-# 	request.CLIENT_IDENTITY.server.log(f'404 - Could\'t locate file {real_path}', level=3, source='get_file')
-# 	return 404, '404.html', -1, b'<html><head><title>404 - Not found</title></head><body>404 - Not found</body></html>'
 
 class CertManager():
 	"""
@@ -453,6 +493,8 @@ class slimHTTP_Error(BaseException):
 class ModuleError(BaseException):
 	def __init__(self, message, path):
 		print(f'[Error] {message} in {path}')
+		self.message = message
+		self.path = path
 
 class ConfError(BaseException):
 	def __init__(self, message):
@@ -533,7 +575,7 @@ class Imported():
 		if self.imported:
 			return self.imported.__repr__()
 		else:
-			return f"<unloaded-module '{os.path.splitext(os.path.basename(self._path))[0]}' from '{self.path}' (Imported-wrapped)>"
+			return f"<loaded-module '{os.path.splitext(os.path.basename(self._path))[0]}' from '{self.path}' (Imported-wrapped)>"
 
 	def __enter__(self, *args, **kwargs):
 		"""
@@ -542,9 +584,9 @@ class Imported():
 
 		.. warning::
 		
-		    It will re-load the code and thus re-instanciate the memory-space for the module.
-		    So any persistant data or sessions **needs** to be stowewd away between imports.
-		    Session files *(`pickle.dump()`)* is a good option *(or god forbid, `__builtins__['storage'] ...` is an option for in-memory stuff)*.
+			It will re-load the code and thus re-instanciate the memory-space for the module.
+			So any persistant data or sessions **needs** to be stowewd away between imports.
+			Session files *(`pickle.dump()`)* is a good option *(or god forbid, `__builtins__['storage'] ...` is an option for in-memory stuff)*.
 		"""
 
 		# import_id = uniqueue_id()
@@ -559,7 +601,7 @@ class Imported():
 		except Exception as e:
 			exc_type, exc_obj, exc_tb = sys.exc_info()
 			fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-			raise ModuleError(traceback.format_exc())
+			raise ModuleError(traceback.format_exc(), self.path)
 
 		return self.imported
 
@@ -690,7 +732,7 @@ class HTTP_SERVER():
 		}
 
 		# while drop_privileges() is None:
-		# 	log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
+		#   log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
 
 	def setup_socket(self):
 		self.sock = socket()
@@ -809,7 +851,9 @@ class HTTP_SERVER():
 		if extension == '.py':
 			if isfile(path):
 				try:
-					with Imported(path) as module:
+					loaded_module = Imported(path)
+					request.CLIENT_IDENTITY.server.log(f'Routing {request.CLIENT_IDENTITY}\'s GET request to {loaded_module} @ {request.vhost}"')
+					with loaded_module as module:
 						# Double-check so that the imported module didn't inject something
 						# into the route options for the specific vhost.
 						if request.vhost in request.CLIENT_IDENTITY.server.routes and request.headers[b'URL'] in request.CLIENT_IDENTITY.server.routes[request.vhost]:
@@ -891,19 +935,19 @@ class HTTP_SERVER():
 		return None
 
 	# def on_upgrade(self, methods, *args, **kwargs):
-	#	self.upgraders = {**self.upgraders, **methods}
-	#	return self.on_upgrade_router
+	#   self.upgraders = {**self.upgraders, **methods}
+	#   return self.on_upgrade_router
 
 	# def on_upgrade_router(self, f, *args, **kwargs):
-	#	self.on_upgrade_pre_func = f
+	#   self.on_upgrade_pre_func = f
 
 	# def on_upgrade_func(self, request, *args, **kwargs):
-	#	if self.on_upgrade_pre_func:
-	#		if self.on_upgrade_pre_func(request):
-	#			return None
+	#   if self.on_upgrade_pre_func:
+	#       if self.on_upgrade_pre_func(request):
+	#           return None
 	#
-	#	if (upgrader := request.headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
-	#		return self.upgraders[upgrader](request)
+	#   if (upgrader := request.headers[b'upgrade'].lower().decode('UTF-8')) in self.upgraders:
+	#       return self.upgraders[upgrader](request)
 
 	def on_close_func(self, CLIENT_IDENTITY, *args, **kwargs):
 		self.pollobj.unregister(CLIENT_IDENTITY.fileno)
@@ -1058,7 +1102,7 @@ class HTTP_SERVER():
 				return
 
 	def do_the_dance(self, fileno):
-#		self.log(f'Parsing request & building reponse events for client: {self.sockets[fileno]}')
+		self.log(f'Request from {self.sockets[fileno]}')
 		for parse_event, *client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
@@ -1160,7 +1204,7 @@ class HTTPS_SERVER(HTTP_SERVER):
 		for cert in glob.glob('./certs/*.cer'):
 			x509 = crypto.load_certificate(cert)
 			store.add_cert(x509)
-		#	context.load_verify_locations(cafile=cert)
+		#   context.load_verify_locations(cafile=cert)
 
 		socket = SSL.Connection(context, socket)
 		try:
@@ -1234,7 +1278,7 @@ class HTTP_CLIENT_IDENTITY():
 		return True if len(self.buffer) else False
 
 	def __repr__(self):
-		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port} -> {self.fileno}>'
+		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port}.{self.fileno}>'
 
 class HTTP_PROXY_REQUEST():
 	"""
@@ -1371,7 +1415,7 @@ class HTTP_REQUEST():
 		"""
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
-#			self.CLIENT_IDENTITY.server.log(f'Request from {self.CLIENT_IDENTITY} being parsed: {header[:2048]} ({remainder[:2048]})')
+#           self.CLIENT_IDENTITY.server.log(f'Request from {self.CLIENT_IDENTITY} being parsed: {header[:2048]} ({remainder[:2048]})')
 			self.payload = b''
 
 			try:
@@ -1422,7 +1466,10 @@ class HTTP_REQUEST():
 					return
 				elif 'module' in _config['vhosts'][self.vhost]:
 					try:
-						with Imported(_config['vhosts'][self.vhost]['module']) as module:
+						loaded_module = Imported(_config['vhosts'][self.vhost]['module'])
+						self.CLIENT_IDENTITY.server.log(f'Routing {self.CLIENT_IDENTITY} to {loaded_module} @ {self.vhost}"')
+
+						with loaded_module as module:
 							# Double-check so that the imported module didn't inject something
 							# into the route options for the specific vhost.
 							if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
@@ -1434,10 +1481,9 @@ class HTTP_REQUEST():
 					finally:
 						self.CLIENT_IDENTITY.close()
 
-#			print('Handling via:', self.CLIENT_IDENTITY.server.REQUESTED_METHOD)
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if len(self.headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
-#				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
+				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
 
 				for event, event_data in response:
 					yield event, event_data
