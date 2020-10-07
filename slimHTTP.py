@@ -1030,8 +1030,8 @@ class HTTP_SERVER():
 			try:
 				self.sockets[fileno].send(partial_data)
 			except Exception as e:
-				# Stream endpoint disconnected
-				self.sockets[fileno].keep_alive = False
+				if fileno in self.sockets:
+					self.sockets[fileno].keep_alive = False
 				return
 
 	def do_the_dance(self, fileno):
