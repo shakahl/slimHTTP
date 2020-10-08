@@ -555,6 +555,7 @@ class VirtualStorage():
 	"""
 	def __init__(self):
 		self.sys = _Sys()
+		self.storage = {}
 internal = VirtualStorage()
 
 class Imported():
@@ -621,7 +622,11 @@ class Imported():
 	def __exit__(self, *args, **kwargs):
 		# TODO: https://stackoverflow.com/questions/28157929/how-to-safely-handle-an-exception-inside-a-context-manager
 		if len(args) >= 2 and args[1]:
-			raise args[1]
+			if len(args) >= 3:
+				fname = os.path.split(args[2].tb_frame.f_code.co_filename)[1]
+				print(f'Fatal error in Imported({self.path}), {fname}@{args[2].tb_lineno}: {args[1]}')
+			else:
+				print(args)
 
 	@property
 	def path(self):
