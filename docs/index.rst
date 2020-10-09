@@ -4,7 +4,7 @@ slimHTTP Documentation
 | **slimHTTP** is a simple, minimal and flexible HTTP server.
 | It supports REST api routes, WebSocket [1]_ traffic and native Python imports as vhost endpoints.
 | 
-| Here's a `demo <https://hvornum.se/>`_ using minimal setup: 
+| Here's a `demo <https://scientist.cloud/>`_ using minimal setup: 
 
 .. code-block:: py
 

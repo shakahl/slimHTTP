@@ -206,6 +206,14 @@ def drop_privileges():
 	"""
 	return True
 
+def UTF8_DICT(d):
+	result = {}
+	for key, val in d.items():
+		if type(key) == bytes: key = key.decode('UTF-8')
+		if type(val) == bytes: val = val.decode('UTF-8')
+		result[key] = val
+	return result
+
 class FILE():
 	"""
 	Whenever a file is to be delivered back, this helper class
@@ -1441,7 +1449,8 @@ class HTTP_REQUEST():
 		""" A dummy parser that will return 200 OK on everything. """
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
 		self.headers = {}
-		self.payload = b''
+		self.method = None
+		self._payload = b''
 		self.ret_code = 200 # Default return code.
 		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
 								206 : b'HTTP/1.1 206 Partial Content\r\n',
@@ -1470,8 +1479,9 @@ class HTTP_REQUEST():
 		else:
 			METHOD, self.headers = data, {}
 
-		if not b' ' in METHOD:
+		if len(METHOD) > 1024 or METHOD[:50].count(b' ') < 2 :
 			raise InvalidFrame(f"An invalid method was given: {METHOD[:100]}")
+
 		METHOD, URL, proto = METHOD.split(b' ', 2)
 		URI_QUERY = {}
 		if b'?' in URL:
@@ -1481,11 +1491,44 @@ class HTTP_REQUEST():
 					k, v = item.split(b'=',1)
 					URI_QUERY[k.lower()] = v
 
-		self.headers[b'URL'] = URL.decode('UTF-8')
+		self.headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead
 		self.headers[b'METHOD'] = METHOD
 		self.headers[b'URI_QUERY'] = URI_QUERY
 
 		self.vhost = None
+
+	@property
+	def method(self):
+		return self.headers[b'METHOD'].decode('UTF-8')
+
+	@property
+	def query(self):
+		return UTF8_DICT(self.headers[b'URI_QUERY'])
+
+	@property
+	def path_params(self):
+		return self.query()
+
+	@property
+	def url(self):
+		try:
+			return self.headers[b'URL'].decode('UTF-8')
+		except:
+			return self.headers[b'URL']
+
+	@property
+	def payload(self):
+		return self._payload
+
+	@property
+	def path(self):
+		class path_storage:
+			def __init__(self, request):
+				self.query = request.query()
+				self.params = self.query
+
+		return path_storage(self)
+	
 
 	def locate_index_file(self, index_files, return_any=True):
 		if type(index_files) == str:
