@@ -28,6 +28,15 @@ Methods and headers
 | in the `@http.route` functionality. Instead, the `method` is given or found in `request.method`
 | in each request object or in `request.headers[b'METHOD']`.
 
+An example to react to `PUT` requests:
+
+.. code-block:: py
+
+    @http.route('/')
+    def main_entry(request):
+        if request.method == 'PUT':
+            print('We got a PUT request')
+
 .. _REST
 REST with Virtual Hosts
 -----------------------
