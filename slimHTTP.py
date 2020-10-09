@@ -1448,7 +1448,7 @@ class HTTP_REQUEST():
 	def __init__(self, CLIENT_IDENTITY):
 		""" A dummy parser that will return 200 OK on everything. """
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
-		self.headers = {}
+		self._headers = {}
 		self.method = None
 		self._payload = b''
 		self.ret_code = 200 # Default return code.
@@ -1463,8 +1463,8 @@ class HTTP_REQUEST():
 
 	@property
 	def data(self):
-		if b'content-type' in self.headers:
-			if self.headers[b'content-type'] == b'application/json':
+		if b'content-type' in self._headers:
+			if self._headers[b'content-type'] == b'application/json':
 				return json.loads(self.payload.decode('UTF-8'))
 		return self.payload
 
@@ -1475,9 +1475,9 @@ class HTTP_REQUEST():
 			for item in header.split(b'\r\n'):
 				if b':' in item:
 					key, val = item.split(b':',1)
-					self.headers[key.strip().lower()] = val.strip()
+					self._headers[key.strip().lower()] = val.strip()
 		else:
-			METHOD, self.headers = data, {}
+			METHOD, self._headers = data, {}
 
 		if len(METHOD) > 1024 or METHOD[:50].count(b' ') < 2 :
 			raise InvalidFrame(f"An invalid method was given: {METHOD[:100]}")
@@ -1491,19 +1491,23 @@ class HTTP_REQUEST():
 					k, v = item.split(b'=',1)
 					URI_QUERY[k.lower()] = v
 
-		self.headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead
-		self.headers[b'METHOD'] = METHOD
-		self.headers[b'URI_QUERY'] = URI_QUERY
+		self._headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead
+		self._headers[b'METHOD'] = METHOD
+		self._headers[b'URI_QUERY'] = URI_QUERY
 
 		self.vhost = None
 
 	@property
+	def headers(self):
+		return self._headers # TODO: Decode with UTF8_DICT()
+
+	@property
 	def method(self):
-		return self.headers[b'METHOD'].decode('UTF-8')
+		return self._headers[b'METHOD'].decode('UTF-8')
 
 	@property
 	def query(self):
-		return UTF8_DICT(self.headers[b'URI_QUERY'])
+		return UTF8_DICT(self._headers[b'URI_QUERY'])
 
 	@property
 	def path_params(self):
@@ -1512,9 +1516,9 @@ class HTTP_REQUEST():
 	@property
 	def url(self):
 		try:
-			return self.headers[b'URL'].decode('UTF-8')
+			return self._headers[b'URL'].decode('UTF-8')
 		except:
-			return self.headers[b'URL']
+			return self._headers[b'URL']
 
 	@property
 	def payload(self):
@@ -1532,13 +1536,13 @@ class HTTP_REQUEST():
 
 	def locate_index_file(self, index_files, return_any=True):
 		if type(index_files) == str:
-			if isfile(self.web_root + self.headers[b'URL'] + index_files):
+			if isfile(self.web_root + self._headers[b'URL'] + index_files):
 				return index_files
 			if return_any:
 				return index_files
 		elif type(index_files) in (list, tuple):
 			for file in index_files:
-				if isfile(self.web_root + self.headers[b'URL'] + file):
+				if isfile(self.web_root + self._headers[b'URL'] + file):
 					if not return_any:
 						return file
 					break
@@ -1573,9 +1577,9 @@ class HTTP_REQUEST():
 			except InvalidFrame as e:
 				return (Events.INVALID_DATA, e)
 
-			if self.headers[b'METHOD'] == b'POST':
-				if b'content-length' in self.headers:
-					content_length = int(self.headers[b'content-length'].decode('UTF-8'))
+			if self._headers[b'METHOD'] == b'POST':
+				if b'content-length' in self._headers:
+					content_length = int(self._headers[b'content-length'].decode('UTF-8'))
 					self.payload = remainder[:content_length]
 
 					if len(self.payload) < content_length:
@@ -1586,14 +1590,14 @@ class HTTP_REQUEST():
 					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST without Content-Length isn\'t supported yet.'))
 
 			_config = self.CLIENT_IDENTITY.server.config
-			if b'host' in self.headers and 'vhosts' in _config and self.headers[b'host'].decode('UTF-8') in _config['vhosts']:
-				self.vhost = self.headers[b'host'].decode('UTF-8')
+			if b'host' in self._headers and 'vhosts' in _config and self._headers[b'host'].decode('UTF-8') in _config['vhosts']:
+				self.vhost = self._headers[b'host'].decode('UTF-8')
 				if 'web_root' in _config['vhosts'][self.vhost]:
 					self.web_root = _config['vhosts'][self.vhost]['web_root']
 
 			# Find suitable upgrades if any
-			if {b'upgrade', b'connection'}.issubset(set(self.headers)) and b'upgrade' in self.headers[b'connection'].lower():
-				requested_upgrade_method = self.headers[b'upgrade'].lower()
+			if {b'upgrade', b'connection'}.issubset(set(self._headers)) and b'upgrade' in self._headers[b'connection'].lower():
+				requested_upgrade_method = self._headers[b'upgrade'].lower()
 				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
 				if new_identity:
 					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}')
@@ -1604,8 +1608,8 @@ class HTTP_REQUEST():
 					return
 
 			# Check for @app.route definitions (self.routes in the server object).
-			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
-				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
+			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
 
 			# Check vhost specifics:
 			if self.vhost:
@@ -1622,8 +1626,8 @@ class HTTP_REQUEST():
 						with loaded_module as module:
 							# Double-check so that the imported module didn't inject something
 							# into the route options for the specific vhost.
-							if self.vhost in self.CLIENT_IDENTITY.server.routes and self.headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
-								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self.headers[b'URL']].parser(self))
+							if self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
 							elif hasattr(module, 'on_request'):
 								yield (Events.CLIENT_RESPONSE_DATA, module.on_request(self))
 					except ModuleError as e:
@@ -1632,8 +1636,8 @@ class HTTP_REQUEST():
 						return self.CLIENT_IDENTITY.close()
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
-			if len(self.headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
-				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self.headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self.headers[b"URL"]} @ {self.vhost}"')
+			if len(self._headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
+				self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} sent a "{self._headers[b"METHOD"].decode("UTF-8")}" request to path "[{self.web_root}/]{self._headers[b"URL"]} @ {self.vhost}"')
 
 				for event, event_data in response:
 					yield event, event_data
