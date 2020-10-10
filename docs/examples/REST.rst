@@ -26,7 +26,7 @@ Methods and headers
 
 | Unlike many other frameworks, slimHTTP does not currently support `method='POST'` filtering
 | in the `@http.route` functionality. Instead, the `method` is given or found in `request.method`
-| in each request object *(or for the raw request data, also in `request.headers[b'METHOD']`)*.
+| in each request object *(or for the raw request data, also in `request.headers[b"METHOD"]`)*.
 
 An example to react to `PUT` requests:
 

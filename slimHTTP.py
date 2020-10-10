@@ -1449,7 +1449,7 @@ class HTTP_REQUEST():
 		""" A dummy parser that will return 200 OK on everything. """
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
 		self._headers = {}
-		self.method = None
+		self._method = None
 		self._payload = b''
 		self.ret_code = 200 # Default return code.
 		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
