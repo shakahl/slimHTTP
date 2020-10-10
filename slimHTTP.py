@@ -1570,7 +1570,7 @@ class HTTP_REQUEST():
 		if b'\r\n\r\n' in self.CLIENT_IDENTITY.buffer:
 			header, remainder = self.CLIENT_IDENTITY.buffer.split(b'\r\n\r\n', 1) # Copy and split the data so we're not working on live data.
 #           self.CLIENT_IDENTITY.server.log(f'Request from {self.CLIENT_IDENTITY} being parsed: {header[:2048]} ({remainder[:2048]})')
-			self.payload = b''
+			self._payload = b''
 
 			try:
 				self.build_request_headers(header)
@@ -1580,9 +1580,9 @@ class HTTP_REQUEST():
 			if self._headers[b'METHOD'] == b'POST':
 				if b'content-length' in self._headers:
 					content_length = int(self._headers[b'content-length'].decode('UTF-8'))
-					self.payload = remainder[:content_length]
+					self._payload = remainder[:content_length]
 
-					if len(self.payload) < content_length:
+					if len(self._payload) < content_length:
 						return (Events.CLIENT_DATA_FRAGMENTED, self)
 
 					self.CLIENT_IDENTITY.buffer = remainder[content_length:] # Add any extended data outside of Content-Length back to the buffer
