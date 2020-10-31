@@ -1491,7 +1491,10 @@ class HTTP_REQUEST():
 					k, v = item.split(b'=',1)
 					URI_QUERY[k.lower()] = v
 
-		self._headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead
+		try:
+			self._headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead, use @property instead.
+		except UnicodeDecodeError:
+			raise InvalidFrame(f"An invalid URL was given: {URL[:100]}")
 		self._headers[b'METHOD'] = METHOD
 		self._headers[b'URI_QUERY'] = URI_QUERY
 
