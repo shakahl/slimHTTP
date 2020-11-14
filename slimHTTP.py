@@ -1240,16 +1240,16 @@ class HTTP_SERVER():
 						if not self.sockets[fileno].keep_alive:
 							self.sockets[fileno].close()
 
+	def run(self):
+		while 1:
+			for event, event_data in self.poll():
+				pass
+
 class HTTPS_SERVER(HTTP_SERVER):
 	def __init__(self, *args, **kwargs):
 		self.default_port = 443
 		if not 'port' in kwargs: kwargs['port'] = self.default_port
 		HTTP_SERVER.__init__(self, *args, **kwargs)
-
-	def run(self):
-		while 1:
-			for event, event_data in self.poll():
-				pass
 
 	def check_config(self, conf):
 		if not os.path.isfile(conf['ssl']['cert']):
