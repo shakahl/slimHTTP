@@ -543,11 +543,12 @@ class Events():
 	WS_CLIENT_COMPLETE_FRAME = 0b11000010
 	WS_CLIENT_INCOMPLETE_FRAME = 0b11000011
 	WS_CLIENT_ROUTED = 0b11000100
+	WS_CLIENT_RESPONSE = 0b11000110
 
 	NOT_YET_IMPLEMENTED = 0b00000000
 	INVALID_DATA = 0b00000001
 
-	DATA_EVENTS = (CLIENT_RESPONSE_DATA, CLIENT_URL_ROUTED, CLIENT_RESPONSE_PROXY_DATA)
+	DATA_EVENTS = (CLIENT_RESPONSE_DATA, CLIENT_URL_ROUTED, CLIENT_RESPONSE_PROXY_DATA, WS_CLIENT_RESPONSE)
 
 	def convert(_int):
 		def_map = {v: k for k, v in Events.__dict__.items() if not k.startswith('__') and k != 'convert'}
@@ -1109,7 +1110,6 @@ class HTTP_SERVER():
 		"""
 		for left_over in self.sockets:
 			if self.sockets[left_over].has_data():
-				#yield self.do_the_dance(left_over)
 				for dance_event_id, dance_event_data in self.do_the_dance(left_over): # Then yield whatever result came from that data
 					yield dance_event_id, dance_event_data
 
@@ -1217,7 +1217,6 @@ class HTTP_SERVER():
 				return
 
 	def do_the_dance(self, fileno):
-		self.log(f'Request from {self.sockets[fileno]}')
 		for parse_event, client_parsed_data in self.sockets[fileno].build_request():
 			yield (parse_event, client_parsed_data)
 
@@ -1479,7 +1478,7 @@ class HTTP_REQUEST():
 		else:
 			METHOD, self._headers = data, {}
 
-		if len(METHOD) > 1024 or METHOD[:50].count(b' ') < 2 :
+		if len(METHOD) > 1024 or METHOD[:1024].count(b' ') < 2 :
 			raise InvalidFrame(f"An invalid method was given: {METHOD[:100]}")
 
 		METHOD, URL, proto = METHOD.split(b' ', 2)
@@ -1578,6 +1577,7 @@ class HTTP_REQUEST():
 			try:
 				self.build_request_headers(header)
 			except InvalidFrame as e:
+				print('Error:', e)
 				return (Events.INVALID_DATA, e)
 
 			if self._headers[b'METHOD'] == b'POST':
@@ -1606,6 +1606,7 @@ class HTTP_REQUEST():
 					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}')
 					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
 					yield (Events.CLIENT_UPGRADED, new_identity)
+					return
 				else:
 					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
 					return
@@ -1616,27 +1617,31 @@ class HTTP_REQUEST():
 
 			# Check vhost specifics:
 			if self.vhost:
-				if 'proxy' in _config['vhosts'][self.vhost]:
-					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
-					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
+				instance_config = _config['vhosts'][self.vhost]
+			else:
+				instance_config = _config
 
-					return
-				elif 'module' in _config['vhosts'][self.vhost]:
-					try:
-						loaded_module = Imported(_config['vhosts'][self.vhost]['module'])
-						self.CLIENT_IDENTITY.server.log(f'Routing {self.CLIENT_IDENTITY} to {loaded_module} @ {self.vhost}"')
+			if 'proxy' in instance_config:
+				proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
+				yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
 
-						with loaded_module as module:
-							# Double-check so that the imported module didn't inject something
-							# into the route options for the specific vhost.
-							if self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
-								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
-							elif hasattr(module, 'on_request'):
-								yield (Events.CLIENT_RESPONSE_DATA, module.on_request(self))
-					except ModuleError as e:
-						print(e.message)
-					finally:
-						return self.CLIENT_IDENTITY.close()
+				return
+			elif 'module' in instance_config:
+				try:
+					loaded_module = Imported(instance_config['module'])
+					self.CLIENT_IDENTITY.server.log(f'Routing {self.CLIENT_IDENTITY} to {loaded_module} @ {self.vhost}"')
+
+					with loaded_module as module:
+						# Double-check so that the imported module didn't inject something
+						# into the route options for the specific vhost.
+						if self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+							yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
+						elif hasattr(module, 'on_request'):
+							yield (Events.CLIENT_RESPONSE_DATA, module.on_request(self))
+				except ModuleError as e:
+					print(e.message)
+				finally:
+					return self.CLIENT_IDENTITY.close()
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if len(self._headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
