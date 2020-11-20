@@ -11,16 +11,24 @@ Websockets
 
     import slimHTTP
     import slimWS
-
+    
     http = slimHTTP.host(slimHTTP.HTTP)
-    websocket = spiderWeb.WebSocket()
-
+    websocket = slimWS.WebSocket()
+    
     @http.on_upgrade
     def upgrade(request):
         new_identity = websocket.WS_CLIENT_IDENTITY(request)
         new_identity.upgrade(request) # Sends Upgrade request to client
         return new_identity
-
+    
+    @websocket.frame
+    def on_ws_frame(frame):
+        print('Got websocket data:', frame.data)
+    
+        yield {
+            'status' : 'recieved'
+        }
+    
     http.run()
 
 .. note:: slimWS has a rudimentary API support, which can be viewed on the `slimWS <https://slimws.readthedocs.io/en/latest/>`_ documentation.
