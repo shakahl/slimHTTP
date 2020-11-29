@@ -901,10 +901,17 @@ class HTTP_SERVER():
 		"""
 
 		# Join the web_root with the requested URL safely(?) passed through os.path.abspath() removing the initial / or C:\ part.
-		path = os.path.safepath(request.web_root, request.headers[b'URL'])
+		try:
+			path = os.path.safepath(request.web_root, request.headers[b'URL'])
+		except:
+			request.ret_code = 404
+			return
+
 		extension = os.path.splitext(path)[1]
 
-		if extension == '.py':
+		# Only allow .py files marked as executable to execute as a module.
+		# This to avoid .py files intended for downloads to be executed.
+		if extension == '.py' and os.access(path, os.X_OK):
 			if isfile(path):
 				try:
 					loaded_module = Imported(path)
@@ -1616,27 +1623,31 @@ class HTTP_REQUEST():
 
 			# Check vhost specifics:
 			if self.vhost:
-				if 'proxy' in _config['vhosts'][self.vhost]:
-					proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
-					yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
+				instance_config = _config['vhosts'][self.vhost]
+			else:
+				instance_config = _config
 
-					return
-				elif 'module' in _config['vhosts'][self.vhost]:
-					try:
-						loaded_module = Imported(_config['vhosts'][self.vhost]['module'])
-						self.CLIENT_IDENTITY.server.log(f'Routing {self.CLIENT_IDENTITY} to {loaded_module} @ {self.vhost}"')
+			if 'proxy' in instance_config:
+				proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
+				yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
 
-						with loaded_module as module:
-							# Double-check so that the imported module didn't inject something
-							# into the route options for the specific vhost.
-							if self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
-								yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
-							elif hasattr(module, 'on_request'):
-								yield (Events.CLIENT_RESPONSE_DATA, module.on_request(self))
-					except ModuleError as e:
-						print(e.message)
-					finally:
-						return self.CLIENT_IDENTITY.close()
+				return
+			elif 'module' in instance_config:
+				try:
+					loaded_module = Imported(instance_config['module'])
+					self.CLIENT_IDENTITY.server.log(f'Routing {self.CLIENT_IDENTITY} to {loaded_module} @ {self.vhost}"')
+
+					with loaded_module as module:
+						# Double-check so that the imported module didn't inject something
+						# into the route options for the specific vhost.
+						if self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+							yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
+						elif hasattr(module, 'on_request'):
+							yield (Events.CLIENT_RESPONSE_DATA, module.on_request(self))
+				except ModuleError as e:
+					print(e.message)
+				finally:
+					return self.CLIENT_IDENTITY.close()
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if len(self._headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
