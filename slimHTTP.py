@@ -3,7 +3,7 @@ import ipaddress
 import importlib.util, traceback
 from os.path import isfile, abspath
 from json import dumps
-from time import time#, sleep
+import time
 from mimetypes import guess_type # TODO: issue consern, doesn't handle bytes,
 								 # requires us to decode the string before guessing type.
 try:
@@ -1352,8 +1352,9 @@ class HTTP_CLIENT_IDENTITY():
 		if on_close: self.on_close = on_close
 
 		self.buffer = b''
-		self.request = HTTP_REQUEST(self)
+		self._buffer = b'' # 
 
+		self.request = HTTP_REQUEST(self)
 	def close(self):
 		if not self.closing:
 			self.on_close(self)
@@ -1380,6 +1381,7 @@ class HTTP_CLIENT_IDENTITY():
 				return None
 
 			self.buffer += d
+			self._buffer = self.buffer
 			yield (Events.CLIENT_DATA, len(self.buffer))
 
 	def send(self, data):
@@ -1412,6 +1414,7 @@ class HTTP_PROXY_REQUEST():
 		self.ORIGINAL_REQUEST = ORIGINAL_REQUEST
 		self.config = self.CLIENT_IDENTITY.server.config
 		self.vhost = self.ORIGINAL_REQUEST.vhost
+		self.CLIENT_IDENTITY.request = self
 
 	def __repr__(self, *args, **kwargs):
 		return f"<HTTP_PROXY_REQUEST client={self.CLIENT_IDENTITY} vhost={self.vhost}, proxy={self.config['vhosts'][self.vhost]['proxy']}>"
@@ -1427,24 +1430,35 @@ class HTTP_PROXY_REQUEST():
 			# We timed out, or the proxy was to slow to respond.
 			self.CLIENT_IDENTITY.server.log(f'{self} was to slow to connect/respond. Aborting proxy and sending back empty response to requester.')
 			return None
+		
 		sock.settimeout(None)
 		if 'ssl' in self.config['vhosts'][self.vhost] and self.config['vhosts'][self.vhost]['ssl']:
 			context = ssl.create_default_context()
 			sock = context.wrap_socket(sock, server_hostname=proxy)
+		
 		poller.register(sock.fileno(), EPOLLIN)
-		sock.send(self.CLIENT_IDENTITY.buffer)
-		self.CLIENT_IDENTITY.server.log(f'Request sent for: {self}')
+		if len(self.CLIENT_IDENTITY._buffer) == 0:
+			return (Events.INVALID_DATA, f"Could not initiate HTTP_PROXY_REQUEST() because reciever {self.CLIENT_IDENTITY} has not supplied any data.")
+
+		sock.send(self.CLIENT_IDENTITY._buffer)
+
+		if type(self.CLIENT_IDENTITY.server) == HTTP_SERVER:
+			self.CLIENT_IDENTITY.server.log(f'Forwarded request {self.ORIGINAL_REQUEST} over a insecure connection: {self}')
 
 		data_buffer = b''
 		# TODO: this will lock the entire application,
 		#       some how we'll have to improve this.
 		#       But for small scale stuff this will do, at least for testing.
-		while poller.poll(0.02):
+		initiated = time.time()
+		while poller.poll(0.02) or (len(data_buffer) == 0 and time.time() - initiated < 10):
 			tmp = sock.recv(8192)
-			if len(tmp) <= 0: break
+			if len(tmp) <= 0 and len(data_buffer) > 0:
+				break
 			data_buffer += tmp
+
 		poller.unregister(sock.fileno())
 		sock.close()
+
 		return data_buffer
 
 class HTTP_REQUEST():
