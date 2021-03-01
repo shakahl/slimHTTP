@@ -510,21 +510,23 @@ class slimHTTP_Error(BaseException):
 
 class ModuleError(BaseException):
 	def __init__(self, message, path):
-		print(f'[Error] {message} in {path}')
 		self.message = message
 		self.path = path
 
 class ConfError(BaseException):
 	def __init__(self, message):
-		print(f'[Warn] {message}')
+		self.message = message
+		pass
 
 class NotYetImplemented(BaseException):
 	def __init__(self, message):
-		print(f'[Warn] {message}')
+		self.message = message
+		pass
 
 class UpgradeIssue(BaseException):
 	def __init__(self, message):
-		print(f'[Error] {message}')
+		self.message = message
+		pass
 
 class Events():
 	"""
@@ -780,9 +782,22 @@ class HTTP_SERVER():
 		self.routes = {
 			None : {} # Default vhost routes
 		}
+		self.debuggable_routes = {}
 
 		# while drop_privileges() is None:
 		#   log('Waiting for privileges to drop.', once=True, level=5, origin='slimHTTP', function='http_serve')
+
+	def is_debuggable(self, url :str):
+		if len(self.debuggable_routes) == 0:
+			return True
+
+		if url in self.debuggable_routes:
+			return True
+
+		return False
+
+	def debug(self, url):
+		self.debuggable_routes[url] = True
 
 	def setup_socket(self):
 		self.sock = socket()
@@ -1436,9 +1451,12 @@ class HTTP_CLIENT_IDENTITY():
 
 class HTTP_PROXY_REQUEST():
 	"""
-	Turns a HTTP Request into a Reverse Proxy request,
-	based on :class:`~slimHTTP.HTTP_REQUEST` identifying the requested host
-	to be a vhost with the appropriate `vhost` configuration for a reverse proxy.
+	Tunnels any data transparently with both initial data and future data.
+	Unless one of the ends of the created connection disconnects, this tunnel
+	will stay on forever and server both ends.
+
+	It inherits a lot of the properties from :class:`~slimHTTP.HTTP_REQUEST` in order
+	to remember which session it belongs to if asked.
 	"""
 	def __init__(self, CLIENT_IDENTITY, ORIGINAL_REQUEST):
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
@@ -1473,7 +1491,7 @@ class HTTP_PROXY_REQUEST():
 
 		sock.send(self.CLIENT_IDENTITY._buffer)
 
-		if type(self.CLIENT_IDENTITY.server) == HTTP_SERVER:
+		if type(self.CLIENT_IDENTITY.server) == HTTP_SERVER and self.CLIENT_IDENTITY.server.is_debuggable(self.ORIGINAL_REQUEST.url):
 			self.CLIENT_IDENTITY.server.log(f'Forwarded request {self.ORIGINAL_REQUEST} over a insecure connection: {self}')
 
 		data_buffer = b''
@@ -1502,6 +1520,7 @@ class HTTP_REQUEST():
 		self._headers = {}
 		self._method = None
 		self._payload = b''
+		self.vhost = None
 		self.ret_code = 200 # Default return code.
 		self.ret_code_mapper = {200 : b'HTTP/1.1 200 OK\r\n',
 								206 : b'HTTP/1.1 206 Partial Content\r\n',
@@ -1512,44 +1531,15 @@ class HTTP_REQUEST():
 		self.session_storage = {}
 		self.web_root = self.CLIENT_IDENTITY.server.config['web_root']
 
+	def __repr__(self):
+		return f"<HTTP_REQUEST {self.method} {self.url[:50]}; vhost={self.vhost}>"
+
 	@property
 	def data(self):
 		if b'content-type' in self._headers:
 			if self._headers[b'content-type'] == b'application/json':
 				return json.loads(self.payload.decode('UTF-8'))
 		return self.payload
-
-	def build_request_headers(self, data):
-		## Parse the headers
-		if b'\r\n' in data:
-			METHOD, header = data.split(b'\r\n',1)
-			for item in header.split(b'\r\n'):
-				if b':' in item:
-					key, val = item.split(b':',1)
-					self._headers[key.strip().lower()] = val.strip()
-		else:
-			METHOD, self._headers = data, {}
-
-		if len(METHOD) > 1024 or METHOD[:1024].count(b' ') < 2 :
-			raise InvalidFrame(f"An invalid method was given: {METHOD[:100]}")
-
-		METHOD, URL, proto = METHOD.split(b' ', 2)
-		URI_QUERY = {}
-		if b'?' in URL:
-			URL, QUERIES = URL.split(b'?', 1)
-			for item in QUERIES.split(b'&'):
-				if b'=' in item:
-					k, v = item.split(b'=',1)
-					URI_QUERY[k.lower()] = v
-
-		try:
-			self._headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead, use @property instead.
-		except UnicodeDecodeError:
-			raise InvalidFrame(f"An invalid URL was given: {URL[:100]}")
-		self._headers[b'METHOD'] = METHOD
-		self._headers[b'URI_QUERY'] = URI_QUERY
-
-		self.vhost = None
 
 	@property
 	def headers(self):
@@ -1587,6 +1577,35 @@ class HTTP_REQUEST():
 
 		return path_storage(self)
 	
+	def build_request_headers(self, data):
+		## Parse the headers
+		if b'\r\n' in data:
+			METHOD, header = data.split(b'\r\n',1)
+			for item in header.split(b'\r\n'):
+				if b':' in item:
+					key, val = item.split(b':',1)
+					self._headers[key.strip().lower()] = val.strip()
+		else:
+			METHOD, self._headers = data, {}
+
+		if len(METHOD) > 1024 or METHOD[:1024].count(b' ') < 2 :
+			raise InvalidFrame(f"An invalid method was given: {METHOD[:100]}")
+
+		METHOD, URL, proto = METHOD.split(b' ', 2)
+		URI_QUERY = {}
+		if b'?' in URL:
+			URL, QUERIES = URL.split(b'?', 1)
+			for item in QUERIES.split(b'&'):
+				if b'=' in item:
+					k, v = item.split(b'=',1)
+					URI_QUERY[k.lower()] = v
+
+		try:
+			self._headers[b'URL'] = URL.decode('UTF-8') #TODO: Remove decode and keep the original, use self.url instead, use @property instead.
+		except UnicodeDecodeError:
+			raise InvalidFrame(f"An invalid URL was given: {URL[:100]}")
+		self._headers[b'METHOD'] = METHOD
+		self._headers[b'URI_QUERY'] = URI_QUERY
 
 	def locate_index_file(self, index_files, return_any=True):
 		if type(index_files) == str:
@@ -1663,21 +1682,8 @@ class HTTP_REQUEST():
 				if 'web_root' in _config['vhosts'][self.vhost]:
 					self.web_root = _config['vhosts'][self.vhost]['web_root']
 
-			# Find suitable upgrades if any
-			if {b'upgrade', b'connection'}.issubset(set(self._headers)) and b'upgrade' in self._headers[b'connection'].lower():
-				requested_upgrade_method = self._headers[b'upgrade'].lower()
-				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
-				if new_identity:
-					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}')
-					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
-					yield (Events.CLIENT_UPGRADED, new_identity)
-					return
-				else:
-					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
-					return
-
 			# Check for @app.route definitions (self.routes in the server object).
-			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
+			if self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
 				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
 			elif self.vhost in self.CLIENT_IDENTITY.server.routes and (route_handler := self.check_partial_routes(self.vhost, self._headers[b'URL'])):
 				yield (Events.CLIENT_URL_ROUTED, route_handler.parser(self))
@@ -1709,6 +1715,21 @@ class HTTP_REQUEST():
 					print(e.message)
 				finally:
 					return self.CLIENT_IDENTITY.close()
+
+			# Find suitable upgrades if any
+			elif {b'upgrade', b'connection'}.issubset(set(self._headers)) and b'upgrade' in self._headers[b'connection'].lower():
+				requested_upgrade_method = self._headers[b'upgrade'].lower()
+				self.CLIENT_IDENTITY.server.log(f'Looking up upgrader {requested_upgrade_method} for {self.CLIENT_IDENTITY}')
+				new_identity = self.CLIENT_IDENTITY.server.on_upgrade_func(self)
+				if new_identity:
+					self.CLIENT_IDENTITY.server.log(f'{self.CLIENT_IDENTITY} has been upgraded to {new_identity}')
+					self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno] = new_identity
+					yield (Events.CLIENT_UPGRADED, new_identity)
+					return
+				else:
+					self.CLIENT_IDENTITY.server.log(f'Could not upgrade {self.CLIENT_IDENTITY} using {self.CLIENT_IDENTITY.server.on_upgrade_func}', level=logging.ERROR)
+					yield (Events.CLIENT_UPGRADE_ISSUE, UpgradeIssue(f'Could not upgrade client {self.CLIENT_IDENTITY} with desired upgrader: {requested_upgrade_method}'))
+					return
 
 			# Lastly, handle the request as one of the builtins (POST, GET)
 			if len(self._headers[b'URL']) and (response := self.CLIENT_IDENTITY.server.REQUESTED_METHOD(self)):
