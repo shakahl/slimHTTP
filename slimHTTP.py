@@ -1,6 +1,8 @@
 import ssl, os, sys, random, json, glob
 import ipaddress
 import importlib.util, traceback
+import logging
+
 from os.path import isfile, abspath
 from json import dumps
 import time
@@ -494,6 +496,9 @@ class CertManager():
 
 		return priv_key, certificate
 
+class LoggerError(BaseException):
+	pass
+	
 class InvalidFrame(BaseException):
 	pass
 
@@ -790,7 +795,30 @@ class HTTP_SERVER():
 		A simple print wrapper, placeholder for more advanced logging in the future.
 		Joins any `*args` together and safely calls :func:'str' on each argument.
 		"""
-		print('[LOG] '.join([str(x) for x in args]))
+		logger = logging.getLogger(__name__)
+		if 'level' in kwargs:
+			if type(kwargs['level']) == str:
+				if kwargs['level'].lower() == 'critical':
+					kwargs['level'] = logging.CRITICAL
+				elif kwargs['level'].lower() == 'erro':
+					kwargs['level'] = logging.ERROR
+				elif kwargs['level'].lower() == 'warning':
+					kwargs['level'] = logging.WARNING
+				elif kwargs['level'].lower() == 'info':
+					kwargs['level'] = logging.INFO
+				elif kwargs['level'].lower() == 'debug':
+					kwargs['level'] = logging.DEBUG
+				# elif kwargs['level'].lower() == 'notset':
+				# 	kwargs['level'] = logging.NOTSET
+			elif type(kwargs['level']) == int:
+				if not kwargs['level'] in (0, 10, 20, 30, 40, 50):
+					raise LoggerError(f"Unable to automatically detect the correct log level for: {args} | {kwargs}")
+			else:
+				raise LoggerError(f"Unknown level definition: {kwargs['level']}")
+		else:
+			kwargs['level'] = logging.INFO
+
+		logger.log(kwargs['level'], ''.join([str(x) for x in args]))
 
 		# TODO: Dump raw requests/logs to a .pcap:  (Optional, if scapy is precent)
 		# 
@@ -1586,6 +1614,17 @@ class HTTP_REQUEST():
 		
 		return x + b'\r\n'
 
+	def check_partial_routes(self, vhost, url):
+		partial_route_handlers = []
+		for route in self.CLIENT_IDENTITY.server.routes[vhost]:
+			if route in url[:len(route)]:
+				partial_route_handlers.append(self.CLIENT_IDENTITY.server.routes[vhost][route])
+
+		if len(partial_route_handlers) == 1:
+			return partial_route_handlers[0]
+
+		raise KeyError(f"Multiple route handlers registered for {url}: {partial_route_handlers}")
+
 	def parse(self):
 		"""
 		Split the HTTP data into headers and body.
@@ -1601,7 +1640,7 @@ class HTTP_REQUEST():
 				print('Error:', e)
 				return (Events.INVALID_DATA, e)
 
-			if self._headers[b'METHOD'] == b'POST':
+			if self._headers[b'METHOD'] in (b'POST', b'PUT'):
 				if b'content-length' in self._headers:
 					content_length = int(self._headers[b'content-length'].decode('UTF-8'))
 					self._payload = remainder[:content_length]
@@ -1611,7 +1650,7 @@ class HTTP_REQUEST():
 
 					self.CLIENT_IDENTITY.buffer = remainder[content_length:] # Add any extended data outside of Content-Length back to the buffer
 				else:
-					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST without Content-Length isn\'t supported yet.'))
+					return (Events.NOT_YET_IMPLEMENTED, NotYetImplemented('POST|PUT without Content-Length isn\'t supported yet.'))
 
 			_config = self.CLIENT_IDENTITY.server.config
 			if b'host' in self._headers and 'vhosts' in _config and self._headers[b'host'].decode('UTF-8') in _config['vhosts']:
@@ -1635,6 +1674,8 @@ class HTTP_REQUEST():
 			# Check for @app.route definitions (self.routes in the server object).
 			elif self.vhost in self.CLIENT_IDENTITY.server.routes and self._headers[b'URL'] in self.CLIENT_IDENTITY.server.routes[self.vhost]:
 				yield (Events.CLIENT_URL_ROUTED, self.CLIENT_IDENTITY.server.routes[self.vhost][self._headers[b'URL']].parser(self))
+			elif self.vhost in self.CLIENT_IDENTITY.server.routes and (route_handler := self.check_partial_routes(self.vhost, self._headers[b'URL'])):
+				yield (Events.CLIENT_URL_ROUTED, route_handler.parser(self))
 
 			# Check vhost specifics:
 			if self.vhost:
