@@ -1625,6 +1625,8 @@ class HTTP_REQUEST():
 
 		if len(partial_route_handlers) == 1:
 			return partial_route_handlers[0]
+		elif len(partial_route_handlers) == 0:
+			return None
 
 		raise KeyError(f"Multiple route handlers registered for {url}: {partial_route_handlers}")
 
