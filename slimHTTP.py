@@ -555,6 +555,8 @@ class Events():
 	WS_CLIENT_ROUTED = 0b11000100
 	WS_CLIENT_RESPONSE = 0b11000110
 
+	PROXY_EMPTY_RESPONSE = 0b11100000
+
 	NOT_YET_IMPLEMENTED = 0b00000000
 	INVALID_DATA = 0b00000001
 
@@ -1161,7 +1163,7 @@ class HTTP_SERVER():
 		:return: `tuple(Events.<type>, EVENT_DATA)`
 		:rtype: iterator
 		"""
-		for left_over in self.sockets:
+		for left_over in list(self.sockets.keys()):
 			if self.sockets[left_over].has_data():
 				for dance_event_id, dance_event_data in self.do_the_dance(left_over): # Then yield whatever result came from that data
 					yield dance_event_id, dance_event_data
@@ -1459,56 +1461,87 @@ class HTTP_PROXY_REQUEST():
 	to remember which session it belongs to if asked.
 	"""
 	def __init__(self, CLIENT_IDENTITY, ORIGINAL_REQUEST):
+		CLIENT_IDENTITY.server.log(f"Initating a two-way proxy connection between {CLIENT_IDENTITY} and {CLIENT_IDENTITY.server.config['vhosts'][ORIGINAL_REQUEST.vhost]['proxy']}", level=logging.DEBUG)
 		self.CLIENT_IDENTITY = CLIENT_IDENTITY
 		self.ORIGINAL_REQUEST = ORIGINAL_REQUEST
 		self.config = self.CLIENT_IDENTITY.server.config
 		self.vhost = self.ORIGINAL_REQUEST.vhost
 		self.CLIENT_IDENTITY.request = self
+		self.poller = None
+		self.proxy_sock = None
+		self.connected = False
 
 	def __repr__(self, *args, **kwargs):
 		return f"<HTTP_PROXY_REQUEST client={self.CLIENT_IDENTITY} vhost={self.vhost}, proxy={self.config['vhosts'][self.vhost]['proxy']}>"
 
-	def parse(self):
-		poller = epoll()
-		sock = socket()
-		sock.settimeout(0.02)
+	def connect(self):
+		self.poller = epoll()
+		self.proxy_sock = socket()
+		self.proxy_sock.settimeout(0.02)
 		proxy, proxy_port = self.config['vhosts'][self.vhost]['proxy'].split(':',1)
 		try:
-			sock.connect((proxy, int(proxy_port)))
+			self.proxy_sock.connect((proxy, int(proxy_port)))
+			self.CLIENT_IDENTITY.server.log(f'Connected to proxy on {self}')
 		except:
 			# We timed out, or the proxy was to slow to respond.
 			self.CLIENT_IDENTITY.server.log(f'{self} was to slow to connect/respond. Aborting proxy and sending back empty response to requester.')
 			return None
 		
-		sock.settimeout(None)
+		self.proxy_sock.settimeout(None)
 		if 'ssl' in self.config['vhosts'][self.vhost] and self.config['vhosts'][self.vhost]['ssl']:
 			context = ssl.create_default_context()
-			sock = context.wrap_socket(sock, server_hostname=proxy)
-		
-		poller.register(sock.fileno(), EPOLLIN)
-		if len(self.CLIENT_IDENTITY._buffer) == 0:
-			return (Events.INVALID_DATA, f"Could not initiate HTTP_PROXY_REQUEST() because reciever {self.CLIENT_IDENTITY} has not supplied any data.")
+			self.proxy_sock = context.wrap_socket(self.proxy_sock, server_hostname=proxy)
+			self.CLIENT_IDENTITY.server.log(f'Proxy connection has been wrapped in SSL: {self}')
 
-		sock.send(self.CLIENT_IDENTITY._buffer)
+		# Force the connection to an open state,
+		# and we'll determine the sockets future by the state of the two ends of this proxy tunnel.
+		self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno].keep_alive = True
+		self.poller.register(self.proxy_sock.fileno(), EPOLLIN)
 
-		if type(self.CLIENT_IDENTITY.server) == HTTP_SERVER and self.CLIENT_IDENTITY.server.is_debuggable(self.ORIGINAL_REQUEST.url):
-			self.CLIENT_IDENTITY.server.log(f'Forwarded request {self.ORIGINAL_REQUEST} over a insecure connection: {self}')
+		self.connected = True
+		self.disconnected = False
 
-		data_buffer = b''
-		# TODO: this will lock the entire application,
-		#       some how we'll have to improve this.
-		#       But for small scale stuff this will do, at least for testing.
-		initiated = time.time()
-		while poller.poll(0.02) or (len(data_buffer) == 0 and time.time() - initiated < 10):
-			tmp = sock.recv(8192)
-			if len(tmp) <= 0 and len(data_buffer) > 0:
+		return True
+
+	def close(self):
+		self.poller.unregister(self.proxy_sock.fileno())
+		self.proxy_sock.close()
+		self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno].keep_alive = False
+		self.disconnected = True
+
+	def parse(self):
+		if not self.connected and (status := self.connect()) is not True:
+			if status is not None:
+				return status
+
+		if self.CLIENT_IDENTITY._buffer:
+			self.CLIENT_IDENTITY.server.log(f'Sending buffer "{self.CLIENT_IDENTITY._buffer}" to proxy {self}', level=logging.DEBUG)
+			self.proxy_sock.send(self.CLIENT_IDENTITY._buffer)
+			self.CLIENT_IDENTITY._buffer = b'' # Once we've sent the buffer, clear it in case new data comes in
+
+		#if type(self.CLIENT_IDENTITY.server) == HTTP_SERVER and self.CLIENT_IDENTITY.server.is_debuggable(self.ORIGINAL_REQUEST.url):
+		#	self.CLIENT_IDENTITY.server.log(f'Forwarded request {self.ORIGINAL_REQUEST} over a insecure connection: {self}')
+
+		#self.CLIENT_IDENTITY.server.log(f'Gathering data from proxy endpoint on {self}', level=logging.DEBUG)
+		proxy_buffer = b''
+		for socket_fileno, event_type in self.poller.poll(0.02):
+			tmp = self.proxy_sock.recv(8192)
+			if len(tmp) <= 0:
+				self.close()
 				break
-			data_buffer += tmp
+			proxy_buffer += tmp
 
-		poller.unregister(sock.fileno())
-		sock.close()
 
-		return data_buffer
+		#self.poller.unregister(self.proxy_sock.fileno())
+		#self.proxy_sock.close()
+
+		if proxy_buffer:
+			if b'HTTP/1.1 200' in proxy_buffer:
+				self.CLIENT_IDENTITY.server.log(f'Data "{proxy_buffer[:50]}" recieved, forwarding back to {self.CLIENT_IDENTITY}', level=logging.DEBUG)
+			yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_buffer)
+		
+		yield (Events.PROXY_EMPTY_RESPONSE, None)
+
 
 class HTTP_REQUEST():
 	"""
@@ -1695,8 +1728,11 @@ class HTTP_REQUEST():
 				instance_config = _config
 
 			if 'proxy' in instance_config:
-				proxy_object = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
-				yield (Events.CLIENT_RESPONSE_PROXY_DATA, proxy_object.parse())
+				new_request = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
+				self.CLIENT_IDENTITY.server.log(f"Swapping HTTP_REQUEST {self.CLIENT_IDENTITY.request} for a more permanent {new_request}")
+				self.CLIENT_IDENTITY.request = new_request
+				for initial_proxy_event, initial_proxy_data in self.CLIENT_IDENTITY.request.parse():
+					yield initial_proxy_event, initial_proxy_data
 
 				return
 			elif 'module' in instance_config:
