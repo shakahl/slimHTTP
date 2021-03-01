@@ -62,7 +62,10 @@ except:
 				new_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 				new_context.load_cert_chain(context.cert, context.key)
 				context = new_context
-			return context.wrap_socket(socket, server_side=True)
+			socket.settimeout(5)
+			new_ssl_socket = context.wrap_socket(socket, server_side=True)
+			new_ssl_socket.settimeout(None)
+			return new_ssl_socket
 
 from socket import *
 try:
