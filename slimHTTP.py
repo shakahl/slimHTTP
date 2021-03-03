@@ -1403,6 +1403,7 @@ class HTTP_CLIENT_IDENTITY():
 		self._buffer = b'' # 
 
 		self.request = HTTP_REQUEST(self)
+
 	def close(self):
 		if not self.closing:
 			self.on_close(self)
@@ -1411,6 +1412,10 @@ class HTTP_CLIENT_IDENTITY():
 	def on_close(self, *args, **kwargs):
 		self.closing = True
 		self.server.on_close_func(self)
+
+	def clear_cache(self):
+		self.buffer = b''
+		self._buffer = b''
 
 	def poll(self, timeout=GLOBAL_POLL_TIMEOUT, force_recieve=False):
 		"""
@@ -1445,8 +1450,13 @@ class HTTP_CLIENT_IDENTITY():
 			self.server.log(traceback.format_exc())
 
 	def has_data(self):
-		if self.closing: return False
-		return True if len(self.buffer) else False
+		if self.closing:
+			return False
+		if len(self.buffer):
+			return True
+		if type(self.request) == HTTP_PROXY_REQUEST and self.request.connected:
+			return True
+		return False
 
 	def __repr__(self):
 		return f'<slimhttpd.HTTP_CLIENT_IDENTITY @ {self.address}:{self.source_port}.{self.fileno}>'
@@ -1466,25 +1476,30 @@ class HTTP_PROXY_REQUEST():
 		self.ORIGINAL_REQUEST = ORIGINAL_REQUEST
 		self.config = self.CLIENT_IDENTITY.server.config
 		self.vhost = self.ORIGINAL_REQUEST.vhost
-		self.CLIENT_IDENTITY.request = self
-		self.poller = None
+		self.poller = epoll()
 		self.proxy_sock = None
 		self.connected = False
 
 	def __repr__(self, *args, **kwargs):
-		return f"<HTTP_PROXY_REQUEST client={self.CLIENT_IDENTITY} vhost={self.vhost}, proxy={self.config['vhosts'][self.vhost]['proxy']}>"
+		if self.proxy_sock:
+			proxy_repr = self.proxy_sock
+		else:
+			proxy_repr = self.config['vhosts'][self.vhost]['proxy']
+		return f"<HTTP_PROXY_REQUEST client={self.CLIENT_IDENTITY} vhost={self.vhost}, proxy={proxy_repr}>"
 
 	def connect(self):
-		self.poller = epoll()
 		self.proxy_sock = socket()
 		self.proxy_sock.settimeout(0.02)
 		proxy, proxy_port = self.config['vhosts'][self.vhost]['proxy'].split(':',1)
 		try:
 			self.proxy_sock.connect((proxy, int(proxy_port)))
-			self.CLIENT_IDENTITY.server.log(f'Connected to proxy on {self}')
+			self.CLIENT_IDENTITY.server.log(f'Connected to proxy on {self}', level=logging.DEBUG)
 		except:
 			# We timed out, or the proxy was to slow to respond.
-			self.CLIENT_IDENTITY.server.log(f'{self} was to slow to connect/respond. Aborting proxy and sending back empty response to requester.')
+			self.CLIENT_IDENTITY.server.log(f'Was unable to connect to proxy {self}.', level=logging.ERROR)
+			self.proxy_sock = None
+			self.connected = False
+			self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno].keep_alive = False
 			return None
 		
 		self.proxy_sock.settimeout(None)
@@ -1504,20 +1519,32 @@ class HTTP_PROXY_REQUEST():
 		return True
 
 	def close(self):
+		self.CLIENT_IDENTITY.server.log(f'Proxy session closing for {self}.', level=logging.ERROR)
 		self.poller.unregister(self.proxy_sock.fileno())
 		self.proxy_sock.close()
 		self.CLIENT_IDENTITY.server.sockets[self.CLIENT_IDENTITY.fileno].keep_alive = False
 		self.disconnected = True
 
 	def parse(self):
+		print(self)
 		if not self.connected and (status := self.connect()) is not True:
 			if status is not None:
 				return status
 
+		if not self.connected:
+			return None
+
 		if self.CLIENT_IDENTITY._buffer:
-			self.CLIENT_IDENTITY.server.log(f'Sending buffer "{self.CLIENT_IDENTITY._buffer}" to proxy {self}', level=logging.DEBUG)
-			self.proxy_sock.send(self.CLIENT_IDENTITY._buffer)
-			self.CLIENT_IDENTITY._buffer = b'' # Once we've sent the buffer, clear it in case new data comes in
+			self.CLIENT_IDENTITY.server.log(f'Sending buffer "{id(self.CLIENT_IDENTITY._buffer), self.CLIENT_IDENTITY._buffer[:20]}" to proxy {self}', level=logging.DEBUG)
+			try:
+				self.proxy_sock.send(self.CLIENT_IDENTITY._buffer)
+			except BrokenPipeError as err:
+				self.CLIENT_IDENTITY.server.log(f'Calling close() on {self}.', level=logging.ERROR)
+				self.close()
+				return
+
+			self.CLIENT_IDENTITY.server.log(f'Clearing buffer "{id(self.CLIENT_IDENTITY._buffer), self.CLIENT_IDENTITY._buffer[:20]}" of {self.CLIENT_IDENTITY}', level=logging.DEBUG)
+			self.CLIENT_IDENTITY.clear_cache() # Once we've sent the buffer, clear it in case new data comes in
 
 		#if type(self.CLIENT_IDENTITY.server) == HTTP_SERVER and self.CLIENT_IDENTITY.server.is_debuggable(self.ORIGINAL_REQUEST.url):
 		#	self.CLIENT_IDENTITY.server.log(f'Forwarded request {self.ORIGINAL_REQUEST} over a insecure connection: {self}')
@@ -1729,11 +1756,14 @@ class HTTP_REQUEST():
 
 			if 'proxy' in instance_config:
 				new_request = HTTP_PROXY_REQUEST(self.CLIENT_IDENTITY, self)
-				self.CLIENT_IDENTITY.server.log(f"Swapping HTTP_REQUEST {self.CLIENT_IDENTITY.request} for a more permanent {new_request}")
+				self.CLIENT_IDENTITY.server.log(f"Swapping HTTP_REQUEST {self.CLIENT_IDENTITY.request} for a more permanent {new_request}", level=logging.DEBUG)
 				self.CLIENT_IDENTITY.request = new_request
 				for initial_proxy_event, initial_proxy_data in self.CLIENT_IDENTITY.request.parse():
 					yield initial_proxy_event, initial_proxy_data
 
+				if not self.CLIENT_IDENTITY.request.connected:
+					return self.CLIENT_IDENTITY.close()
+				
 				return
 			elif 'module' in instance_config:
 				try:
