@@ -2,7 +2,5 @@
 **/**dist
 **/**build
 **/**egg-info
-**/**slimHTTP
 index.html
 test.py
-/test
